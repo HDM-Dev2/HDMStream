@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSocket } from '../hooks/useSocket'
+import api from '../api/axios'
 
 export default function ReceivePage() {
   const navigate = useNavigate()
@@ -12,6 +13,7 @@ export default function ReceivePage() {
   const [showGallery, setShowGallery] = useState(false)
   const [deviceName, setDeviceName] = useState('')
   const [showNamePrompt, setShowNamePrompt] = useState(true)
+  const [uploading, setUploading] = useState(false)
   
   const deviceIdRef = useRef(null)
 
@@ -113,25 +115,65 @@ export default function ReceivePage() {
     }
   }
 
-  const capturePhoto = (senderId) => {
+  const capturePhoto = async (senderId) => {
     const streamData = streams.get(senderId)
     if (!streamData || !streamData.url) return
     
-    const capture = {
-      id: Date.now(),
-      type: 'photo',
-      dataUrl: streamData.url,
-      timestamp: new Date().toISOString()
+    setUploading(true)
+    setStatus('Uploading to Cloudinary...')
+    
+    try {
+      const blob = await fetch(streamData.url).then(r => r.blob())
+      const dataUrl = await new Promise(resolve => {
+        const reader = new FileReader()
+        reader.onloadend = () => resolve(reader.result)
+        reader.readAsDataURL(blob)
+      })
+      
+      const response = await api.post('/upload', { dataUrl })
+      
+      const capture = {
+        id: response.data.publicId,
+        type: 'photo',
+        url: response.data.url,
+        downloadUrl: response.data.downloadUrl,
+        timestamp: new Date().toISOString()
+      }
+      
+      setCapturedImages(prev => [capture, ...prev])
+      setStatus('Photo captured and uploaded!')
+    } catch (error) {
+      console.error('Upload failed:', error)
+      setStatus('Upload failed')
+    } finally {
+      setUploading(false)
     }
-    setCapturedImages(prev => [capture, ...prev])
-    setStatus('Photo captured!')
+  }
+
+  const deleteCapture = async (capture) => {
+    try {
+      await api.delete('/upload', { data: { publicId: capture.id } })
+      setCapturedImages(prev => prev.filter(c => c.id !== capture.id))
+      setStatus('Photo deleted')
+    } catch (error) {
+      console.error('Delete failed:', error)
+      setStatus('Delete failed')
+    }
+  }
+
+  const clearAllCaptures = async () => {
+    for (const capture of capturedImages) {
+      await deleteCapture(capture)
+    }
   }
 
   const downloadCapture = (capture) => {
     const link = document.createElement('a')
-    link.href = capture.dataUrl
-    link.download = `capture-${capture.timestamp}.jpg`
+    link.href = capture.downloadUrl || capture.url
+    link.download = `hdm-capture-${capture.timestamp}.jpg`
+    document.body.appendChild(link)
     link.click()
+    document.body.removeChild(link)
   }
 
   if (showNamePrompt) {
@@ -244,9 +286,10 @@ export default function ReceivePage() {
                     <div className="absolute bottom-2 left-1/2 transform -translate-x-1/2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
                       <button
                         onClick={() => capturePhoto(senderId)}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-sm"
+                        disabled={uploading}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-sm disabled:opacity-50"
                       >
-                        📸 Capture
+                        {uploading ? '⏳ Uploading...' : '📸 Capture'}
                       </button>
                     </div>
                   </div>
@@ -256,23 +299,45 @@ export default function ReceivePage() {
           </>
         ) : (
           <div>
-            <h2 className="text-xl font-bold mb-4">Captures</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Gallery ({capturedImages.length})</h2>
+              {capturedImages.length > 0 && (
+                <button
+                  onClick={clearAllCaptures}
+                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm"
+                >
+                  🗑 Clear All
+                </button>
+              )}
+            </div>
             
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {capturedImages.map(capture => (
                 <div key={capture.id} className="relative group">
                   <img 
-                    src={capture.dataUrl} 
+                    src={capture.url} 
                     alt="Capture" 
                     className="w-full rounded-lg"
+                    loading="lazy"
                   />
-                  <div className="absolute bottom-2 right-2 space-x-2 opacity-0 group-hover:opacity-100 transition">
+                  <div className="absolute bottom-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
                     <button
                       onClick={() => downloadCapture(capture)}
                       className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
                     >
-                      ⬇
+                      ⬇ Download
                     </button>
+                    <button
+                      onClick={() => deleteCapture(capture)}
+                      className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
+                    >
+                      🗑
+                    </button>
+                  </div>
+                  <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
+                    <span className="text-xs text-white">
+                      {new Date(capture.timestamp).toLocaleTimeString()}
+                    </span>
                   </div>
                 </div>
               ))}

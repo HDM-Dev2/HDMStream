@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSocket } from '../hooks/useSocket'
+import api from '../api/axios'
 
 export default function SendPage() {
   const navigate = useNavigate()
@@ -17,6 +18,7 @@ export default function SendPage() {
   const [recordings, setRecordings] = useState([])
   const [showGallery, setShowGallery] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
+  const [uploading, setUploading] = useState(false)
   
   const localStream = useRef(null)
   const videoRef = useRef(null)
@@ -192,9 +194,33 @@ export default function SendPage() {
     }
   }
 
-  const capturePhoto = () => {
+  const addWatermark = (ctx, width, height) => {
+    const baseFontSize = Math.max(10, width * 0.015)
+    
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'bottom'
+    
+    const padding = width * 0.015
+    const x = padding
+    const y = height - padding
+    
+    ctx.font = `bold ${baseFontSize}px Arial, sans-serif`
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.8)'
+    ctx.fillText('HDM', x, y)
+    
+    const hdmWidth = ctx.measureText('HDM').width
+    
+    ctx.font = `bold ${baseFontSize * 0.6}px Arial, sans-serif`
+    ctx.fillStyle = 'rgba(59, 130, 246, 0.8)'
+    ctx.fillText('HD', x + hdmWidth + 2, y - baseFontSize * 0.4)
+  }
+
+  const capturePhoto = async () => {
     const video = videoRef.current
     if (!video || !video.videoWidth) return
+
+    setUploading(true)
+    setStatus('Uploading to Cloudinary...')
 
     try {
       const canvas = document.createElement('canvas')
@@ -204,33 +230,27 @@ export default function SendPage() {
       const ctx = canvas.getContext('2d')
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
       
-      const baseFontSize = Math.max(10, canvas.width * 0.015)
-      const padding = canvas.width * 0.015
-      const x = padding
-      const y = canvas.height - padding
+      addWatermark(ctx, canvas.width, canvas.height)
       
-      ctx.font = `bold ${baseFontSize}px Arial, sans-serif`
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.8)'
-      ctx.fillText('HDM', x, y)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
       
-      const hdmWidth = ctx.measureText('HDM').width
-      ctx.font = `bold ${baseFontSize * 0.6}px Arial, sans-serif`
-      ctx.fillStyle = 'rgba(59, 130, 246, 0.8)'
-      ctx.fillText('HD', x + hdmWidth + 2, y - baseFontSize * 0.4)
-      
-      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9)
+      const response = await api.post('/upload', { dataUrl })
       
       const capture = {
-        id: Date.now(),
+        id: response.data.publicId,
         type: 'photo',
-        dataUrl: imageDataUrl,
+        url: response.data.url,
+        downloadUrl: response.data.downloadUrl,
         timestamp: new Date().toISOString()
       }
       
       setCapturedImages(prev => [capture, ...prev])
-      setStatus('Photo captured!')
+      setStatus('Photo captured and uploaded!')
     } catch (error) {
-      console.error('Error capturing photo:', error)
+      console.error('Upload failed:', error)
+      setStatus('Upload failed')
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -288,14 +308,44 @@ export default function SendPage() {
   const downloadCapture = (capture) => {
     if (capture.type === 'photo') {
       const link = document.createElement('a')
-      link.href = capture.dataUrl
-      link.download = `capture-${capture.timestamp}.jpg`
+      link.href = capture.downloadUrl || capture.url
+      link.download = `hdm-capture-${capture.timestamp}.jpg`
+      document.body.appendChild(link)
       link.click()
+      document.body.removeChild(link)
     } else {
       const link = document.createElement('a')
       link.href = capture.url
-      link.download = `recording-${capture.timestamp}.webm`
+      link.download = `hdm-recording-${capture.timestamp}.webm`
+      document.body.appendChild(link)
       link.click()
+      document.body.removeChild(link)
+    }
+  }
+
+  const deleteCapture = async (capture) => {
+    if (capture.type === 'photo') {
+      try {
+        await api.delete('/upload', { data: { publicId: capture.id } })
+        setCapturedImages(prev => prev.filter(c => c.id !== capture.id))
+        setStatus('Photo deleted')
+      } catch (error) {
+        console.error('Delete failed:', error)
+        setStatus('Delete failed')
+      }
+    } else {
+      URL.revokeObjectURL(capture.url)
+      setRecordings(prev => prev.filter(r => r.id !== capture.id))
+      setStatus('Recording deleted')
+    }
+  }
+
+  const clearAllCaptures = async () => {
+    for (const capture of capturedImages) {
+      await deleteCapture(capture)
+    }
+    for (const recording of recordings) {
+      await deleteCapture(recording)
     }
   }
 
@@ -419,23 +469,45 @@ export default function SendPage() {
           </>
         ) : (
           <div className="p-4">
-            <h2 className="text-xl font-bold mb-4">Captures & Recordings</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Gallery ({capturedImages.length + recordings.length})</h2>
+              {(capturedImages.length > 0 || recordings.length > 0) && (
+                <button
+                  onClick={clearAllCaptures}
+                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm"
+                >
+                  🗑 Clear All
+                </button>
+              )}
+            </div>
             
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {capturedImages.map(capture => (
                 <div key={capture.id} className="relative group">
                   <img 
-                    src={capture.dataUrl} 
+                    src={capture.url} 
                     alt="Capture" 
                     className="w-full rounded-lg"
+                    loading="lazy"
                   />
-                  <div className="absolute bottom-2 right-2 space-x-2 opacity-0 group-hover:opacity-100 transition">
+                  <div className="absolute bottom-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
                     <button
                       onClick={() => downloadCapture(capture)}
                       className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
                     >
                       ⬇
                     </button>
+                    <button
+                      onClick={() => deleteCapture(capture)}
+                      className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
+                    >
+                      🗑
+                    </button>
+                  </div>
+                  <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
+                    <span className="text-xs text-white">
+                      {new Date(capture.timestamp).toLocaleTimeString()}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -447,13 +519,24 @@ export default function SendPage() {
                     controls 
                     className="w-full rounded-lg"
                   />
-                  <div className="absolute bottom-2 right-2 space-x-2 opacity-0 group-hover:opacity-100 transition">
+                  <div className="absolute bottom-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
                     <button
                       onClick={() => downloadCapture(recording)}
                       className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
                     >
                       ⬇
                     </button>
+                    <button
+                      onClick={() => deleteCapture(recording)}
+                      className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
+                    >
+                      🗑
+                    </button>
+                  </div>
+                  <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
+                    <span className="text-xs text-white">
+                      {new Date(recording.timestamp).toLocaleTimeString()}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -498,9 +581,10 @@ export default function SendPage() {
           <div className="grid grid-cols-3 gap-3 mb-4">
             <button
               onClick={capturePhoto}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold"
+              disabled={uploading}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50"
             >
-              📸 Capture
+              {uploading ? '⏳ Uploading...' : '📸 Capture'}
             </button>
             
             {!isRecording ? (

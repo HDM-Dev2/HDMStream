@@ -2,10 +2,11 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 10000,
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json'
-  }
+  },
+  maxBodyLength: 50 * 1024 * 1024
 })
 
 api.interceptors.request.use(

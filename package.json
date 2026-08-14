@@ -5,12 +5,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "nodemon --ignore public/ --ignore frontend/ server.js",
     "build": "cd frontend && npm install && npm run build",
     "copy": "rm -rf public && mkdir public && cp -r frontend/dist/* public/",
     "deploy": "npm run build && npm run copy && npm start"
   },
   "dependencies": {
+    "cloudinary": "^1.41.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
