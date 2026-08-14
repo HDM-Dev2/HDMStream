@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSocket } from '../hooks/useSocket'
-import api from '../api/axios'
 
 export default function ReceivePage() {
   const navigate = useNavigate()
@@ -18,16 +17,40 @@ export default function ReceivePage() {
   
   const peerConnections = useRef(new Map())
   const videoRefs = useRef(new Map())
+  const canvasRefs = useRef(new Map())
+  const imgRefs = useRef(new Map())
   const mediaRecorders = useRef(new Map())
   const recordedChunks = useRef(new Map())
+  const deviceIdRef = useRef(null)
 
   useEffect(() => {
+    deviceIdRef.current = localStorage.getItem('receiverDeviceId') || generateDeviceId()
+    localStorage.setItem('receiverDeviceId', deviceIdRef.current)
+    
     const savedName = localStorage.getItem('receiverName')
     if (savedName) {
       setDeviceName(savedName)
       setShowNamePrompt(false)
     }
   }, [])
+
+  useEffect(() => {
+    if (!socket) return
+    
+    socket.emit('get-device-name', { deviceId: deviceIdRef.current, type: 'receiver' })
+    
+    socket.on('device-name-found', (data) => {
+      if (data.name) {
+        setDeviceName(data.name)
+        localStorage.setItem('receiverName', data.name)
+        setShowNamePrompt(false)
+      }
+    })
+    
+    return () => {
+      socket.off('device-name-found')
+    }
+  }, [socket])
 
   useEffect(() => {
     if (senders.length > 0) {
@@ -37,223 +60,77 @@ export default function ReceivePage() {
     }
   }, [senders])
 
+  useEffect(() => {
+    if (!socket) return
+
+    socket.on('frame', (data) => {
+      const { frameData, senderId, senderName } = data
+      
+      setStreams(prev => {
+        const newMap = new Map(prev)
+        newMap.set(senderId, { type: 'relay', frameData, senderName })
+        return newMap
+      })
+      
+      setStatus('Receiving stream...')
+    })
+
+    socket.on('sender-available', (data) => {
+      setStatus('Sender found - Waiting for stream...')
+    })
+
+    socket.on('sender-disconnected', (senderId) => {
+      setStreams(prev => {
+        const newMap = new Map(prev)
+        newMap.delete(senderId)
+        return newMap
+      })
+      setStatus('Ready to receive...')
+    })
+
+    return () => {
+      socket.off('frame')
+      socket.off('sender-available')
+      socket.off('sender-disconnected')
+    }
+  }, [socket])
+
+  const generateDeviceId = () => {
+    return 'receiver-' + Math.random().toString(36).substring(2, 15)
+  }
+
   const handleRegister = async () => {
     const name = deviceName.trim() || `Receiver-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
     setDeviceName(name)
     localStorage.setItem('receiverName', name)
     setShowNamePrompt(false)
     
-    try {
-      await api.post('/camera/register', {
-        deviceId: socket?.id || 'pending',
-        name: name,
-        type: 'receiver'
-      })
-    } catch (error) {
-      console.error('Failed to register receiver:', error)
+    if (socket) {
+      socket.emit('register-device', { deviceId: deviceIdRef.current, name, type: 'receiver' })
     }
-  }
-
-  useEffect(() => {
-    if (!socket) return
-
-    socket.on('sender-available', () => {
-      setStatus('Sender found - Waiting for stream...')
-    })
-
-    socket.on('offer', async (data) => {
-      await handleOffer(data)
-    })
-
-    socket.on('ice-candidate', async (data) => {
-      await handleIceCandidate(data)
-    })
-
-    socket.on('sender-disconnected', (senderId) => {
-      handleSenderDisconnect(senderId)
-    })
-
-    return () => {
-      socket.off('sender-available')
-      socket.off('offer')
-      socket.off('ice-candidate')
-      socket.off('sender-disconnected')
-    }
-  }, [socket])
-
-  const handleOffer = async (data) => {
-    try {
-      const pc = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-      })
-
-      peerConnections.current.set(data.from, pc)
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          sendIceCandidate(data.from, event.candidate)
-        }
-      }
-
-      pc.ontrack = (event) => {
-        const [remoteStream] = event.streams
-        setStreams(prev => {
-          const newMap = new Map(prev)
-          newMap.set(data.from, remoteStream)
-          return newMap
-        })
-        setStatus('Stream connected!')
-      }
-
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') {
-          setStatus('Connected to sender')
-        }
-      }
-
-      await pc.setRemoteDescription(data.offer)
-      const answer = await pc.createAnswer()
-      await pc.setLocalDescription(answer)
-      sendAnswer(data.from, answer)
-    } catch (error) {
-      console.error('Error handling offer:', error)
-    }
-  }
-
-  const handleIceCandidate = async (data) => {
-    const pc = peerConnections.current.get(data.from)
-    if (pc) {
-      try {
-        await pc.addIceCandidate(data.candidate)
-      } catch (error) {
-        console.error('Error adding ICE candidate:', error)
-      }
-    }
-  }
-
-  const handleSenderDisconnect = (senderId) => {
-    const pc = peerConnections.current.get(senderId)
-    if (pc) {
-      pc.close()
-      peerConnections.current.delete(senderId)
-    }
-    
-    if (mediaRecorders.current.has(senderId)) {
-      stopRecording(senderId)
-    }
-    
-    setStreams(prev => {
-      const newMap = new Map(prev)
-      newMap.delete(senderId)
-      return newMap
-    })
-    setStatus('Ready to receive...')
   }
 
   const capturePhoto = (senderId) => {
-    const video = videoRefs.current.get(senderId)
-    if (!video || !video.videoWidth) return
-
-    try {
-      const canvas = document.createElement('canvas')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-      
-      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9)
-      
+    const streamData = streams.get(senderId)
+    if (!streamData) return
+    
+    if (streamData.type === 'relay') {
       const capture = {
         id: Date.now(),
-        senderId,
         type: 'photo',
-        dataUrl: imageDataUrl,
+        dataUrl: streamData.frameData,
         timestamp: new Date().toISOString()
       }
-      
       setCapturedImages(prev => [capture, ...prev])
       setStatus('Photo captured!')
-    } catch (error) {
-      console.error('Error capturing photo:', error)
-    }
-  }
-
-  const startRecording = (senderId) => {
-    const stream = streams.get(senderId)
-    if (!stream) return
-
-    try {
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp8,opus'
-      })
-      
-      const chunks = []
-      recordedChunks.current.set(senderId, chunks)
-      
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunks.push(event.data)
-        }
-      }
-      
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' })
-        const url = URL.createObjectURL(blob)
-        
-        const recording = {
-          id: Date.now(),
-          senderId,
-          type: 'video',
-          url,
-          blob,
-          timestamp: new Date().toISOString()
-        }
-        
-        setRecordings(prev => [recording, ...prev])
-        setRecordingStates(prev => {
-          const newMap = new Map(prev)
-          newMap.set(senderId, false)
-          return newMap
-        })
-        setStatus('Recording saved!')
-      }
-      
-      mediaRecorder.start(1000)
-      mediaRecorders.current.set(senderId, mediaRecorder)
-      
-      setRecordingStates(prev => {
-        const newMap = new Map(prev)
-        newMap.set(senderId, true)
-        return newMap
-      })
-      setStatus('Recording started...')
-    } catch (error) {
-      console.error('Error starting recording:', error)
-    }
-  }
-
-  const stopRecording = (senderId) => {
-    const mediaRecorder = mediaRecorders.current.get(senderId)
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop()
-      mediaRecorders.current.delete(senderId)
-      setStatus('Recording stopped')
     }
   }
 
   const downloadCapture = (capture) => {
-    if (capture.type === 'photo') {
-      const link = document.createElement('a')
-      link.href = capture.dataUrl
-      link.download = `capture-${capture.timestamp}.jpg`
-      link.click()
-    } else {
-      const link = document.createElement('a')
-      link.href = capture.url
-      link.download = `recording-${capture.timestamp}.webm`
-      link.click()
-    }
+    const link = document.createElement('a')
+    link.href = capture.dataUrl
+    link.download = `capture-${capture.timestamp}.jpg`
+    link.click()
   }
 
   if (showNamePrompt) {
@@ -289,6 +166,9 @@ export default function ReceivePage() {
                 setDeviceName(autoName)
                 localStorage.setItem('receiverName', autoName)
                 setShowNamePrompt(false)
+                if (socket) {
+                  socket.emit('register-device', { deviceId: deviceIdRef.current, name: autoName, type: 'receiver' })
+                }
               }}
               className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 rounded-lg transition"
             >
@@ -316,7 +196,7 @@ export default function ReceivePage() {
               onClick={() => setShowGallery(!showGallery)}
               className="text-sm text-blue-400 hover:text-blue-300"
             >
-              📁 Gallery ({capturedImages.length + recordings.length})
+              📁 Gallery ({capturedImages.length})
             </button>
             <span className="text-sm text-gray-300">{deviceName}</span>
             <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -346,34 +226,28 @@ export default function ReceivePage() {
                 streams.size <= 4 ? 'grid-cols-2' :
                 'grid-cols-3'
               }`}>
-                {Array.from(streams.entries()).map(([senderId, stream]) => (
+                {Array.from(streams.entries()).map(([senderId, streamData]) => (
                   <div key={senderId} className="relative bg-black rounded-lg overflow-hidden group">
-                    <video
-                      ref={(el) => {
-                        if (el) {
-                          videoRefs.current.set(senderId, el)
-                          el.srcObject = stream
-                          el.play().catch(err => console.error('Error playing:', err))
-                        }
-                      }}
-                      autoPlay
-                      playsInline
-                      className="w-full h-auto"
-                      style={{ minHeight: '200px' }}
-                    />
+                    {streamData.type === 'relay' ? (
+                      <img 
+                        src={streamData.frameData}
+                        alt="Stream"
+                        className="w-full h-auto"
+                      />
+                    ) : (
+                      <video
+                        autoPlay
+                        playsInline
+                        srcObject={streamData.stream}
+                        className="w-full h-auto"
+                      />
+                    )}
                     
                     <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
                       <span className="text-xs text-white">
-                        {senders.find(s => s.socketId === senderId)?.name || `Sender ${senderId.slice(0, 8)}`}
+                        {streamData.senderName || `Sender ${senderId.slice(0, 8)}`}
                       </span>
                     </div>
-
-                    {recordingStates.get(senderId) && (
-                      <div className="absolute top-2 right-2 flex items-center gap-1 bg-red-600 rounded px-2 py-1">
-                        <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
-                        <span className="text-xs text-white">REC</span>
-                      </div>
-                    )}
 
                     <div className="absolute bottom-2 left-1/2 transform -translate-x-1/2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
                       <button
@@ -382,22 +256,6 @@ export default function ReceivePage() {
                       >
                         📸 Capture
                       </button>
-                      
-                      {!recordingStates.get(senderId) ? (
-                        <button
-                          onClick={() => startRecording(senderId)}
-                          className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm"
-                        >
-                          ⏺ Record
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => stopRecording(senderId)}
-                          className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1 rounded-lg text-sm"
-                        >
-                          ⏹ Stop
-                        </button>
-                      )}
                     </div>
                   </div>
                 ))}
@@ -406,7 +264,7 @@ export default function ReceivePage() {
           </>
         ) : (
           <div>
-            <h2 className="text-xl font-bold mb-4">Captures & Recordings</h2>
+            <h2 className="text-xl font-bold mb-4">Captures</h2>
             
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {capturedImages.map(capture => (
@@ -421,35 +279,17 @@ export default function ReceivePage() {
                       onClick={() => downloadCapture(capture)}
                       className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
                     >
-                      ⬇ Download
-                    </button>
-                  </div>
-                </div>
-              ))}
-              
-              {recordings.map(recording => (
-                <div key={recording.id} className="relative group">
-                  <video 
-                    src={recording.url} 
-                    controls 
-                    className="w-full rounded-lg"
-                  />
-                  <div className="absolute bottom-2 right-2 space-x-2 opacity-0 group-hover:opacity-100 transition">
-                    <button
-                      onClick={() => downloadCapture(recording)}
-                      className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
-                    >
-                      ⬇ Download
+                      ⬇
                     </button>
                   </div>
                 </div>
               ))}
             </div>
             
-            {capturedImages.length === 0 && recordings.length === 0 && (
+            {capturedImages.length === 0 && (
               <div className="text-center py-20">
                 <div className="text-6xl mb-4">📁</div>
-                <p className="text-gray-400">No captures or recordings yet</p>
+                <p className="text-gray-400">No captures yet</p>
               </div>
             )}
           </div>

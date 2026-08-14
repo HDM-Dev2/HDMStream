@@ -1,24 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSocket } from '../hooks/useSocket'
-import api from '../api/axios'
-
-const rtcConfig = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
-  ]
-}
 
 export default function SendPage() {
   const navigate = useNavigate()
@@ -38,11 +20,17 @@ export default function SendPage() {
   
   const localStream = useRef(null)
   const videoRef = useRef(null)
+  const canvasRef = useRef(null)
   const peerConnections = useRef(new Map())
   const mediaRecorder = useRef(null)
   const recordedChunks = useRef([])
+  const frameInterval = useRef(null)
+  const deviceIdRef = useRef(null)
 
   useEffect(() => {
+    deviceIdRef.current = localStorage.getItem('senderDeviceId') || generateDeviceId()
+    localStorage.setItem('senderDeviceId', deviceIdRef.current)
+    
     const savedName = localStorage.getItem('senderName')
     if (savedName) {
       setDeviceName(savedName)
@@ -52,6 +40,25 @@ export default function SendPage() {
   }, [])
 
   useEffect(() => {
+    if (!socket) return
+    
+    socket.emit('get-device-name', { deviceId: deviceIdRef.current, type: 'sender' })
+    
+    socket.on('device-name-found', (data) => {
+      if (data.name) {
+        setDeviceName(data.name)
+        localStorage.setItem('senderName', data.name)
+        setShowNamePrompt(false)
+        startCamera()
+      }
+    })
+    
+    return () => {
+      socket.off('device-name-found')
+    }
+  }, [socket])
+
+  useEffect(() => {
     if (receivers.length > 0) {
       setStatus(`${receivers.length} receiver(s) online - Select to send`)
     } else {
@@ -59,25 +66,8 @@ export default function SendPage() {
     }
   }, [receivers])
 
-  const addWatermark = (ctx, width, height) => {
-    const baseFontSize = Math.max(10, width * 0.015)
-    
-    ctx.textAlign = 'left'
-    ctx.textBaseline = 'bottom'
-    
-    const padding = width * 0.015
-    const x = padding
-    const y = height - padding
-    
-    ctx.font = `bold ${baseFontSize}px Arial, sans-serif`
-    ctx.fillStyle = 'rgba(16, 185, 129, 0.8)'
-    ctx.fillText('HDM', x, y)
-    
-    const hdmWidth = ctx.measureText('HDM').width
-    
-    ctx.font = `bold ${baseFontSize * 0.6}px Arial, sans-serif`
-    ctx.fillStyle = 'rgba(59, 130, 246, 0.8)'
-    ctx.fillText('HD', x + hdmWidth + 2, y - baseFontSize * 0.4)
+  const generateDeviceId = () => {
+    return 'sender-' + Math.random().toString(36).substring(2, 15)
   }
 
   const handleRegister = async () => {
@@ -86,14 +76,8 @@ export default function SendPage() {
     localStorage.setItem('senderName', name)
     setShowNamePrompt(false)
     
-    try {
-      await api.post('/camera/register', {
-        deviceId: socket?.id || 'pending',
-        name: name,
-        facingMode: useFrontCamera ? 'user' : 'environment'
-      })
-    } catch (error) {
-      console.error('Failed to register camera:', error)
+    if (socket) {
+      socket.emit('register-device', { deviceId: deviceIdRef.current, name, type: 'sender' })
     }
     
     startCamera()
@@ -126,43 +110,60 @@ export default function SendPage() {
     }
   }
 
-  const createAndSendOffer = async (receiverId) => {
-    if (!localStream.current) return
+  const captureFrame = useCallback(() => {
+    const video = videoRef.current
+    if (!video || !video.videoWidth) return null
+    
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    
+    return canvas.toDataURL('image/jpeg', 0.8)
+  }, [])
 
-    if (peerConnections.current.has(receiverId)) return
-
-    try {
-      const pc = new RTCPeerConnection(rtcConfig)
-
-      peerConnections.current.set(receiverId, pc)
-
-      localStream.current.getTracks().forEach(track => {
-        pc.addTrack(track, localStream.current)
-      })
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          sendIceCandidate(receiverId, event.candidate)
-        }
-      }
-
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') {
-          setStatus(`Streaming to ${receiverId.slice(0, 8)}...`)
-        } else if (pc.connectionState === 'failed') {
-          peerConnections.current.delete(receiverId)
-          setSelectedReceivers(prev => prev.filter(id => id !== receiverId))
-        }
-      }
-
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      sendOffer(receiverId, offer)
-      
-      setStatus(`Sending to ${receiverId.slice(0, 8)}...`)
-    } catch (error) {
-      console.error('Error creating offer:', error)
+  const startStreaming = useCallback(() => {
+    if (frameInterval.current) {
+      clearInterval(frameInterval.current)
     }
+    
+    frameInterval.current = setInterval(() => {
+      const frameData = captureFrame()
+      if (frameData && socket) {
+        if (selectedReceivers.length === 1) {
+          socket.emit('frame', {
+            frameData,
+            receiverId: selectedReceivers[0],
+            senderName: deviceName
+          })
+        } else {
+          socket.emit('frame-broadcast', {
+            frameData,
+            senderName: deviceName
+          })
+        }
+      }
+    }, 100)
+  }, [socket, selectedReceivers, deviceName, captureFrame])
+
+  const stopStreaming = useCallback(() => {
+    if (frameInterval.current) {
+      clearInterval(frameInterval.current)
+      frameInterval.current = null
+    }
+  }, [])
+
+  const sendToSelected = async () => {
+    if (selectedReceivers.length === 0) {
+      setStatus('Please select at least one receiver')
+      return
+    }
+
+    startStreaming()
+    setStatus(`Streaming to ${selectedReceivers.length} receiver(s)`)
+    setShowReceiverList(false)
   }
 
   const switchCamera = async () => {
@@ -174,6 +175,7 @@ export default function SendPage() {
   }
 
   const stopCamera = () => {
+    stopStreaming()
     if (localStream.current) {
       localStream.current.getTracks().forEach(track => track.stop())
       localStream.current = null
@@ -200,7 +202,19 @@ export default function SendPage() {
       const ctx = canvas.getContext('2d')
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
       
-      addWatermark(ctx, canvas.width, canvas.height)
+      const baseFontSize = Math.max(10, canvas.width * 0.015)
+      const padding = canvas.width * 0.015
+      const x = padding
+      const y = canvas.height - padding
+      
+      ctx.font = `bold ${baseFontSize}px Arial, sans-serif`
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.8)'
+      ctx.fillText('HDM', x, y)
+      
+      const hdmWidth = ctx.measureText('HDM').width
+      ctx.font = `bold ${baseFontSize * 0.6}px Arial, sans-serif`
+      ctx.fillStyle = 'rgba(59, 130, 246, 0.8)'
+      ctx.fillText('HD', x + hdmWidth + 2, y - baseFontSize * 0.4)
       
       const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9)
       
@@ -283,44 +297,6 @@ export default function SendPage() {
     }
   }
 
-  useEffect(() => {
-    if (!socket) return
-
-    socket.on('answer', async (data) => {
-      const pc = peerConnections.current.get(data.from)
-      if (pc) {
-        await pc.setRemoteDescription(data.answer)
-        setStatus('Stream connected!')
-      }
-    })
-
-    socket.on('ice-candidate', async (data) => {
-      const pc = peerConnections.current.get(data.from)
-      if (pc) {
-        try {
-          await pc.addIceCandidate(data.candidate)
-        } catch (error) {
-          console.error('Error adding ICE candidate:', error)
-        }
-      }
-    })
-
-    socket.on('receiver-disconnected', (receiverId) => {
-      const pc = peerConnections.current.get(receiverId)
-      if (pc) {
-        pc.close()
-        peerConnections.current.delete(receiverId)
-      }
-      setSelectedReceivers(prev => prev.filter(id => id !== receiverId))
-    })
-
-    return () => {
-      socket.off('answer')
-      socket.off('ice-candidate')
-      socket.off('receiver-disconnected')
-    }
-  }, [socket])
-
   const toggleReceiver = (receiverId) => {
     setSelectedReceivers(prev => {
       if (prev.includes(receiverId)) {
@@ -331,19 +307,14 @@ export default function SendPage() {
     })
   }
 
-  const sendToSelected = async () => {
-    if (selectedReceivers.length === 0) {
-      setStatus('Please select at least one receiver')
-      return
+  useEffect(() => {
+    return () => {
+      stopStreaming()
+      if (localStream.current) {
+        localStream.current.getTracks().forEach(track => track.stop())
+      }
     }
-
-    for (const receiverId of selectedReceivers) {
-      await createAndSendOffer(receiverId)
-    }
-
-    setStatus(`Streaming to ${selectedReceivers.length} receiver(s)`)
-    setShowReceiverList(false)
-  }
+  }, [stopStreaming])
 
   if (showNamePrompt) {
     return (
@@ -378,6 +349,9 @@ export default function SendPage() {
                 setDeviceName(autoName)
                 localStorage.setItem('senderName', autoName)
                 setShowNamePrompt(false)
+                if (socket) {
+                  socket.emit('register-device', { deviceId: deviceIdRef.current, name: autoName, type: 'sender' })
+                }
                 startCamera()
               }}
               className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 rounded-lg transition"

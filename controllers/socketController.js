@@ -1,12 +1,12 @@
 const Camera = require('../models/Camera');
 const Room = require('../models/Room');
+const Device = require('../models/Device');
 
 const activeSenders = new Map();
 const activeReceivers = new Map();
 
 module.exports = (io) => {
   io.on('connection', (socket) => {
-    console.log(`🔌 Connected: ${socket.id}`);
     
     socket.on('sender-join', async (data = {}) => {
       try {
@@ -23,14 +23,15 @@ module.exports = (io) => {
           joinedAt: Date.now()
         });
         
+        await Device.findOneAndUpdate(
+          { deviceId, type: 'sender' },
+          { name, lastSeen: new Date() },
+          { upsert: true, new: true }
+        );
+        
         await Camera.findOneAndUpdate(
           { deviceId },
-          { 
-            status: 'online',
-            socketId: socket.id,
-            name,
-            lastActive: new Date()
-          },
+          { status: 'online', socketId: socket.id, name, lastActive: new Date() },
           { upsert: true, new: true }
         );
         
@@ -43,33 +44,11 @@ module.exports = (io) => {
             name
           });
         });
-        
-        console.log(`📤 Sender joined: ${socket.id} (${name})`);
       } catch (error) {
         console.error('Sender join error:', error);
       }
     });
-    
-    socket.on('sender-stop', async () => {
-      try {
-        if (socket.role === 'sender') {
-          activeSenders.delete(socket.id);
-          
-          if (socket.deviceId) {
-            await Camera.findOneAndUpdate(
-              { deviceId: socket.deviceId },
-              { status: 'offline', socketId: null, lastActive: new Date() }
-            );
-          }
-          
-          io.emit('senders-update', Array.from(activeSenders.values()));
-          io.emit('sender-disconnected', socket.id);
-        }
-      } catch (error) {
-        console.error('Sender stop error:', error);
-      }
-    });
-    
+
     socket.on('receiver-join', async (data = {}) => {
       try {
         const { deviceId = socket.id, name = 'Receiver' } = data;
@@ -85,6 +64,12 @@ module.exports = (io) => {
           joinedAt: Date.now()
         });
         
+        await Device.findOneAndUpdate(
+          { deviceId, type: 'receiver' },
+          { name, lastSeen: new Date() },
+          { upsert: true, new: true }
+        );
+        
         io.emit('receivers-update', Array.from(activeReceivers.values()));
         
         activeSenders.forEach((sender, senderSocketId) => {
@@ -94,26 +79,72 @@ module.exports = (io) => {
             name: sender.name
           });
         });
-        
-        console.log(`📥 Receiver joined: ${socket.id} (${name})`);
       } catch (error) {
         console.error('Receiver join error:', error);
       }
     });
-    
-    socket.on('sender-target', (data) => {
-      console.log('🎯 Sender targeting receiver:', data);
-      if (data.receiverId) {
-        io.to(data.receiverId).emit('sender-target', {
-          senderId: data.senderId || socket.id,
-          deviceId: data.deviceId,
-          name: data.name
+
+    socket.on('get-device-name', async (data) => {
+      try {
+        const { deviceId, type } = data;
+        const device = await Device.findOne({ deviceId, type });
+        socket.emit('device-name-found', device ? { name: device.name } : { name: null });
+      } catch (error) {
+        socket.emit('device-name-found', { name: null });
+      }
+    });
+
+    socket.on('register-device', async (data) => {
+      try {
+        const { deviceId, name, type } = data;
+        await Device.findOneAndUpdate(
+          { deviceId, type },
+          { name, lastSeen: new Date() },
+          { upsert: true, new: true }
+        );
+        socket.emit('device-registered', { success: true, name });
+      } catch (error) {
+        socket.emit('device-registered', { success: false });
+      }
+    });
+
+    socket.on('frame', (data) => {
+      const { frameData, receiverId, senderName } = data;
+      if (receiverId && activeReceivers.has(receiverId)) {
+        io.to(receiverId).emit('frame', {
+          frameData,
+          senderId: socket.id,
+          senderName: senderName || socket.name || 'Unknown'
         });
       }
     });
-    
+
+    socket.on('frame-broadcast', (data) => {
+      const { frameData, senderName } = data;
+      activeReceivers.forEach((receiver, receiverSocketId) => {
+        io.to(receiverSocketId).emit('frame', {
+          frameData,
+          senderId: socket.id,
+          senderName: senderName || socket.name || 'Unknown'
+        });
+      });
+    });
+
+    socket.on('sender-stop', async () => {
+      if (socket.role === 'sender') {
+        activeSenders.delete(socket.id);
+        if (socket.deviceId) {
+          await Camera.findOneAndUpdate(
+            { deviceId: socket.deviceId },
+            { status: 'offline', socketId: null, lastActive: new Date() }
+          );
+        }
+        io.emit('senders-update', Array.from(activeSenders.values()));
+        io.emit('sender-disconnected', socket.id);
+      }
+    });
+
     socket.on('offer', (data) => {
-      console.log('📨 Offer from:', socket.id, 'to:', data.target);
       if (data.target) {
         io.to(data.target).emit('offer', {
           offer: data.offer,
@@ -123,19 +154,16 @@ module.exports = (io) => {
         });
       }
     });
-    
+
     socket.on('answer', (data) => {
-      console.log('📨 Answer from:', socket.id, 'to:', data.target);
       if (data.target) {
         io.to(data.target).emit('answer', {
           answer: data.answer,
-          from: socket.id,
-          fromDeviceId: socket.deviceId,
-          fromName: socket.name
+          from: socket.id
         });
       }
     });
-    
+
     socket.on('ice-candidate', (data) => {
       if (data.target) {
         io.to(data.target).emit('ice-candidate', {
@@ -144,32 +172,23 @@ module.exports = (io) => {
         });
       }
     });
-    
+
     socket.on('disconnect', async () => {
-      console.log(`🔌 Disconnected: ${socket.id}`);
-      
-      try {
-        if (socket.role === 'sender') {
-          activeSenders.delete(socket.id);
-          
-          if (socket.deviceId) {
-            await Camera.findOneAndUpdate(
-              { deviceId: socket.deviceId },
-              { status: 'offline', socketId: null, lastActive: new Date() }
-            );
-          }
-          
-          io.emit('senders-update', Array.from(activeSenders.values()));
-          io.emit('sender-disconnected', socket.id);
+      if (socket.role === 'sender') {
+        activeSenders.delete(socket.id);
+        if (socket.deviceId) {
+          await Camera.findOneAndUpdate(
+            { deviceId: socket.deviceId },
+            { status: 'offline', socketId: null, lastActive: new Date() }
+          );
         }
-        
-        if (socket.role === 'receiver') {
-          activeReceivers.delete(socket.id);
-          io.emit('receivers-update', Array.from(activeReceivers.values()));
-          io.emit('receiver-disconnected', socket.id);
-        }
-      } catch (error) {
-        console.error('Disconnect error:', error);
+        io.emit('senders-update', Array.from(activeSenders.values()));
+        io.emit('sender-disconnected', socket.id);
+      }
+      if (socket.role === 'receiver') {
+        activeReceivers.delete(socket.id);
+        io.emit('receivers-update', Array.from(activeReceivers.values()));
+        io.emit('receiver-disconnected', socket.id);
       }
     });
   });
