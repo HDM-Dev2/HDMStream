@@ -12,8 +12,14 @@ export default function ReceivePage() {
   const [streams, setStreams] = useState(new Map())
   const [status, setStatus] = useState('Ready to receive...')
   const [capturedImages, setCapturedImages] = useState([])
+  const [recordings, setRecordings] = useState([])
   const [showGallery, setShowGallery] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
+  
+  const mediaRecorder = useRef(null)
+  const recordedChunks = useRef([])
+  const currentStreamRef = useRef(null)
 
   const isFarmvexaUser = user?.authProvider === 'farmvexa'
 
@@ -48,6 +54,7 @@ export default function ReceivePage() {
         return newMap
       })
       
+      currentStreamRef.current = { url, senderName }
       setStatus('Receiving stream...')
     })
 
@@ -94,25 +101,20 @@ export default function ReceivePage() {
     if (socket && socket.connected) {
       socket.emit('receiver-join', { name: user?.deviceName })
       setStatus('Refreshing...')
-      setTimeout(() => {
-        if (senders.length > 0) {
-          setStatus(`${senders.length} sender(s) online - Waiting for stream...`)
-        } else {
-          setStatus('Ready to receive...')
-        }
-      }, 1000)
     }
   }
 
-  const capturePhoto = async (senderId) => {
-    const streamData = streams.get(senderId)
-    if (!streamData || !streamData.url) return
+  const capturePhoto = async () => {
+    if (!currentStreamRef.current?.url) {
+      setStatus('No stream available to capture')
+      return
+    }
     
     setUploading(true)
     setStatus('Uploading...')
     
     try {
-      const blob = await fetch(streamData.url).then(r => r.blob())
+      const blob = await fetch(currentStreamRef.current.url).then(r => r.blob())
       const dataUrl = await new Promise(resolve => {
         const reader = new FileReader()
         reader.onloadend = () => resolve(reader.result)
@@ -122,7 +124,7 @@ export default function ReceivePage() {
       const response = await api.post('/upload', { 
         dataUrl,
         receiverName: user?.deviceName,
-        senderName: streamData.senderName
+        senderName: currentStreamRef.current.senderName
       })
       
       const capture = {
@@ -143,6 +145,74 @@ export default function ReceivePage() {
     }
   }
 
+  const startRecording = async () => {
+    if (!currentStreamRef.current?.url) {
+      setStatus('No stream available to record')
+      return
+    }
+
+    if (isRecording) return
+
+    try {
+      const blob = await fetch(currentStreamRef.current.url).then(r => r.blob())
+      const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: false })
+      
+      const recorder = new MediaRecorder(stream)
+      const chunks = []
+      recordedChunks.current = chunks
+      
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data)
+        }
+      }
+      
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' })
+        const url = URL.createObjectURL(blob)
+        
+        const recording = {
+          id: Date.now(),
+          type: 'video',
+          url,
+          blob,
+          timestamp: new Date().toISOString()
+        }
+        
+        setRecordings(prev => [recording, ...prev])
+        setIsRecording(false)
+        setStatus('Recording saved!')
+      }
+      
+      recorder.start(1000)
+      mediaRecorder.current = recorder
+      setIsRecording(true)
+      setStatus('Recording started...')
+      
+      // Record frames from stream
+      const interval = setInterval(async () => {
+        if (currentStreamRef.current?.url) {
+          const frameBlob = await fetch(currentStreamRef.current.url).then(r => r.blob())
+          chunks.push(frameBlob)
+        }
+      }, 200)
+      
+      recorder._frameInterval = interval
+    } catch (error) {
+      console.error('Error starting recording:', error)
+      setStatus('Recording failed')
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorder.current && mediaRecorder.current.state !== 'inactive') {
+      clearInterval(mediaRecorder.current._frameInterval)
+      mediaRecorder.current.stop()
+      mediaRecorder.current = null
+      setStatus('Recording stopped')
+    }
+  }
+
   const deleteCapture = async (capture) => {
     try {
       await api.delete('/upload', { 
@@ -159,21 +229,30 @@ export default function ReceivePage() {
   }
 
   const downloadCapture = async (capture) => {
-    try {
-      const response = await fetch(capture.url)
-      const blob = await response.blob()
-      const blobUrl = URL.createObjectURL(blob)
-      
+    if (capture.type === 'photo') {
+      try {
+        const response = await fetch(capture.url)
+        const blob = await response.blob()
+        const blobUrl = URL.createObjectURL(blob)
+        
+        const link = document.createElement('a')
+        link.href = blobUrl
+        link.download = `hdm-capture-${capture.timestamp}.jpg`
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        
+        URL.revokeObjectURL(blobUrl)
+      } catch (error) {
+        window.open(capture.url, '_blank')
+      }
+    } else {
       const link = document.createElement('a')
-      link.href = blobUrl
-      link.download = `hdm-capture-${capture.timestamp}.jpg`
+      link.href = capture.url
+      link.download = `hdm-recording-${capture.timestamp}.webm`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
-      
-      URL.revokeObjectURL(blobUrl)
-    } catch (error) {
-      window.open(capture.url, '_blank')
     }
   }
 
@@ -210,10 +289,35 @@ export default function ReceivePage() {
               🔄
             </button>
             <button
+              onClick={capturePhoto}
+              disabled={uploading}
+              className="text-sm text-blue-400 hover:text-blue-300"
+              title="Capture photo"
+            >
+              {uploading ? '⏳' : '📸'}
+            </button>
+            {!isRecording ? (
+              <button
+                onClick={startRecording}
+                className="text-sm text-red-400 hover:text-red-300"
+                title="Record video"
+              >
+                ⏺
+              </button>
+            ) : (
+              <button
+                onClick={stopRecording}
+                className="text-sm text-gray-400 hover:text-gray-300"
+                title="Stop recording"
+              >
+                ⏹
+              </button>
+            )}
+            <button
               onClick={() => setShowGallery(!showGallery)}
               className="text-sm text-blue-400 hover:text-blue-300"
             >
-              📁 Gallery ({capturedImages.length})
+              📁 Gallery ({capturedImages.length + recordings.length})
             </button>
             <span className="text-sm text-gray-300">{user?.deviceName}</span>
             <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -252,16 +356,6 @@ export default function ReceivePage() {
                         {streamData.senderName || 'Sender'}
                       </span>
                     </div>
-
-                    <div className="absolute bottom-2 left-1/2 transform -translate-x-1/2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
-                      <button
-                        onClick={() => capturePhoto(senderId)}
-                        disabled={uploading}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-sm disabled:opacity-50"
-                      >
-                        {uploading ? '⏳' : '📸 Capture'}
-                      </button>
-                    </div>
                   </div>
                 ))}
               </div>
@@ -269,7 +363,7 @@ export default function ReceivePage() {
           </>
         ) : (
           <div>
-            <h2 className="text-xl font-bold mb-4">Gallery ({capturedImages.length})</h2>
+            <h2 className="text-xl font-bold mb-4">Gallery ({capturedImages.length + recordings.length})</h2>
             
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {capturedImages.map(capture => (
@@ -310,12 +404,30 @@ export default function ReceivePage() {
                   </div>
                 </div>
               ))}
+              
+              {recordings.map(recording => (
+                <div key={recording.id} className="relative group">
+                  <video 
+                    src={recording.url} 
+                    controls 
+                    className="w-full rounded-lg"
+                  />
+                  <div className="absolute bottom-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
+                    <button
+                      onClick={() => downloadCapture(recording)}
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
+                    >
+                      ⬇
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
             
-            {capturedImages.length === 0 && (
+            {capturedImages.length === 0 && recordings.length === 0 && (
               <div className="text-center py-20">
                 <div className="text-6xl mb-4">📁</div>
-                <p className="text-gray-400">No captures yet</p>
+                <p className="text-gray-400">No captures or recordings yet</p>
               </div>
             )}
           </div>
