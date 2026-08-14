@@ -24,8 +24,6 @@ exports.register = async (req, res) => {
   try {
     const { email, password, username, deviceName } = req.body;
     
-    logger.info('Register attempt', { email });
-    
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
@@ -42,8 +40,6 @@ exports.register = async (req, res) => {
       authProvider: 'local',
       deviceName: deviceName || username || email.split('@')[0]
     });
-    
-    logger.info('User registered', { userId: user._id, email: user.email });
     
     const token = generateToken(user);
     
@@ -68,8 +64,6 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    logger.info('Login attempt', { email });
-    
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
@@ -80,20 +74,16 @@ exports.login = async (req, res) => {
     });
     
     if (!user || !user.password) {
-      logger.warn('Login failed - user not found', { email });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      logger.warn('Login failed - wrong password', { email });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     
     user.lastLogin = new Date();
     await user.save();
-    
-    logger.info('User logged in', { userId: user._id, email: user.email });
     
     const token = generateToken(user);
     
@@ -118,14 +108,9 @@ exports.loginWithFarmvexa = async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    logger.info('FarmVexa login attempt', { email });
-    logger.info('FarmVexa API URL', { url: FARMVEXA_API_URL });
-    
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
-    
-    logger.info('Calling FarmVexa validation endpoint...');
     
     const response = await axios.post(
       `${FARMVEXA_API_URL}/api/internal/hdmstream/auth/validate`,
@@ -136,22 +121,12 @@ exports.loginWithFarmvexa = async (req, res) => {
       }
     );
     
-    logger.info('FarmVexa response received', { 
-      success: response.data.success,
-      hasUser: !!response.data?.data?.user
-    });
-    
     if (!response.data.success) {
-      logger.warn('FarmVexa validation failed', { email });
       return res.status(401).json({ error: 'Invalid FarmVexa credentials' });
     }
     
     const farmvexaUser = response.data.data.user;
-    logger.info('FarmVexa user data', { 
-      id: farmvexaUser.id,
-      name: farmvexaUser.name,
-      email: farmvexaUser.email
-    });
+    const fieldScan = response.data.data.fieldScan || null;
     
     let user = await User.findOne({ farmvexaId: farmvexaUser.id });
     
@@ -168,10 +143,10 @@ exports.loginWithFarmvexa = async (req, res) => {
           county: farmvexaUser.county,
           subCounty: farmvexaUser.subCounty,
           phone: farmvexaUser.phone,
-          farms: farmvexaUser.farms || []
+          farms: farmvexaUser.farms || [],
+          fieldScan: fieldScan
         }
       });
-      logger.info('New FarmVexa user created', { userId: user._id });
     } else {
       user.email = farmvexaUser.email;
       user.deviceName = farmvexaUser.name;
@@ -182,15 +157,14 @@ exports.loginWithFarmvexa = async (req, res) => {
         county: farmvexaUser.county,
         subCounty: farmvexaUser.subCounty,
         phone: farmvexaUser.phone,
-        farms: farmvexaUser.farms || []
+        farms: farmvexaUser.farms || [],
+        fieldScan: fieldScan
       };
       user.lastLogin = new Date();
       await user.save();
-      logger.info('FarmVexa user updated', { userId: user._id });
     }
     
     const token = generateToken(user);
-    logger.info('Token generated for user', { userId: user._id });
     
     res.json({
       success: true,
@@ -207,9 +181,7 @@ exports.loginWithFarmvexa = async (req, res) => {
   } catch (error) {
     logger.error('FarmVexa login error', {
       message: error.message,
-      code: error.code,
-      responseData: error.response?.data,
-      responseStatus: error.response?.status
+      code: error.code
     });
     
     if (error.response && error.response.status === 401) {
@@ -220,9 +192,6 @@ exports.loginWithFarmvexa = async (req, res) => {
     }
     if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
       return res.status(504).json({ error: 'FarmVexa service timeout' });
-    }
-    if (error.code === 'CERT_HAS_EXPIRED' || error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
-      return res.status(502).json({ error: 'FarmVexa SSL certificate error' });
     }
     
     res.status(500).json({ 
@@ -259,7 +228,6 @@ exports.getCurrentUser = async (req, res) => {
 
 exports.logout = async (req, res) => {
   try {
-    logger.info('User logged out', { userId: req.userId });
     res.json({ success: true, message: 'Logged out' });
   } catch (error) {
     logger.error('Logout error', { error: error.message });

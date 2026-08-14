@@ -6,7 +6,7 @@ import api from '../api/axios'
 
 export default function SendPage() {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, fieldScanSettings } = useAuth()
   const { socket, connected, receivers, error } = useSocket('sender', user?.deviceName)
   
   const [status, setStatus] = useState('Starting camera...')
@@ -20,11 +20,19 @@ export default function SendPage() {
   const [isRecording, setIsRecording] = useState(false)
   const [uploading, setUploading] = useState(false)
   
+  const [isFieldScanMode, setIsFieldScanMode] = useState(false)
+  const [scanPhotos, setScanPhotos] = useState([])
+  const [gpsData, setGpsData] = useState(null)
+  const [gpsError, setGpsError] = useState('')
+  const [sendingToFarmVexa, setSendingToFarmVexa] = useState(false)
+  
   const localStream = useRef(null)
   const videoRef = useRef(null)
   const mediaRecorder = useRef(null)
   const recordedChunks = useRef([])
   const frameInterval = useRef(null)
+  const gpsWatchId = useRef(null)
+  const scanIntervalRef = useRef(null)
 
   useEffect(() => {
     startCamera()
@@ -168,10 +176,6 @@ export default function SendPage() {
 
   const addWatermark = (ctx, width, height) => {
     const baseFontSize = Math.max(10, width * 0.015)
-    
-    ctx.textAlign = 'left'
-    ctx.textBaseline = 'bottom'
-    
     const padding = width * 0.015
     const x = padding
     const y = height - padding
@@ -181,7 +185,6 @@ export default function SendPage() {
     ctx.fillText('HDM', x, y)
     
     const hdmWidth = ctx.measureText('HDM').width
-    
     ctx.font = `bold ${baseFontSize * 0.6}px Arial, sans-serif`
     ctx.fillStyle = 'rgba(59, 130, 246, 0.8)'
     ctx.fillText('HD', x + hdmWidth + 2, y - baseFontSize * 0.4)
@@ -222,11 +225,163 @@ export default function SendPage() {
       setCapturedImages(prev => [capture, ...prev])
       setStatus('Photo captured!')
     } catch (error) {
-      console.error('Upload failed:', error)
       setStatus('Upload failed')
     } finally {
       setUploading(false)
     }
+  }
+
+  const startGps = () => {
+    setGpsError('')
+    
+    if (!navigator.geolocation) {
+      setGpsError('GPS not supported')
+      return false
+    }
+    
+    gpsWatchId.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        setGpsData({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          altitude: pos.coords.altitude || 0
+        })
+      },
+      (err) => {
+        setGpsError('GPS error: ' + err.message)
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 10000
+      }
+    )
+    
+    return true
+  }
+
+  const stopGps = () => {
+    if (gpsWatchId.current) {
+      navigator.geolocation.clearWatch(gpsWatchId.current)
+      gpsWatchId.current = null
+    }
+    setGpsData(null)
+  }
+
+  const capturePhotoForScan = async () => {
+    const video = videoRef.current
+    if (!video || !video.videoWidth) return
+    
+    const maxPhotos = fieldScanSettings?.maxPhotosPerScan || 100
+    if (scanPhotos.length >= maxPhotos) {
+      stopFieldScan()
+      return
+    }
+    
+    const requiredAccuracy = fieldScanSettings?.requireGpsAccuracy || 15
+    if (!gpsData || gpsData.accuracy > requiredAccuracy) {
+      setGpsError(`Need GPS accuracy < ${requiredAccuracy}m`)
+      return
+    }
+    
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
+      
+      const response = await api.post('/upload', {
+        dataUrl,
+        senderName: user?.deviceName,
+        gps: gpsData,
+        scanMode: true
+      })
+      
+      const photo = {
+        id: response.data.captureId,
+        url: response.data.url,
+        cloudinaryPublicId: response.data.publicId,
+        lat: gpsData.lat,
+        lng: gpsData.lng,
+        timestamp: new Date().toISOString()
+      }
+      
+      setScanPhotos(prev => [...prev, photo])
+      setStatus(`📸 Captured ${scanPhotos.length + 1}/${maxPhotos}`)
+    } catch (error) {
+      setStatus('Capture failed')
+    }
+  }
+
+  const startFieldScan = async () => {
+    if (!fieldScanSettings?.enabled) {
+      setStatus('Field scan is disabled')
+      return
+    }
+    
+    if (!isStreaming) {
+      await startCamera()
+    }
+    
+    const gpsStarted = startGps()
+    if (!gpsStarted) return
+    
+    setStatus('Waiting for GPS...')
+    
+    setTimeout(() => {
+      if (!gpsData) {
+        setGpsError('No GPS signal')
+        return
+      }
+      
+      setScanPhotos([])
+      setIsFieldScanMode(true)
+      setStatus(`Field scan started`)
+      
+      const intervalMs = (fieldScanSettings.captureInterval || 5) * 1000
+      scanIntervalRef.current = setInterval(() => {
+        capturePhotoForScan()
+      }, intervalMs)
+    }, 2000)
+  }
+
+  const stopFieldScan = () => {
+    if (scanIntervalRef.current) {
+      clearInterval(scanIntervalRef.current)
+      scanIntervalRef.current = null
+    }
+    
+    stopGps()
+    setIsFieldScanMode(false)
+    
+    if (scanPhotos.length > 0) {
+      sendBatchToFarmVexa()
+    } else {
+      setStatus('No photos captured')
+    }
+  }
+
+  const sendBatchToFarmVexa = () => {
+    setSendingToFarmVexa(true)
+    
+    if (window.parent !== window) {
+      window.parent.postMessage({
+        type: 'farmvexa-field-scan-batch',
+        photos: scanPhotos,
+        totalPhotos: scanPhotos.length,
+        timestamp: new Date().toISOString()
+      }, '*')
+      
+      setStatus(`✅ Sent ${scanPhotos.length} photos to FarmVexa`)
+    } else {
+      setStatus('Open from FarmVexa to send field scan')
+    }
+    
+    setSendingToFarmVexa(false)
   }
 
   const startRecording = () => {
@@ -268,7 +423,7 @@ export default function SendPage() {
       setIsRecording(true)
       setStatus('Recording started...')
     } catch (error) {
-      console.error('Error starting recording:', error)
+      setStatus('Recording failed')
     }
   }
 
@@ -342,6 +497,10 @@ export default function SendPage() {
   useEffect(() => {
     return () => {
       stopStreaming()
+      if (scanIntervalRef.current) {
+        clearInterval(scanIntervalRef.current)
+      }
+      stopGps()
       if (localStream.current) {
         localStream.current.getTracks().forEach(track => track.stop())
       }
@@ -426,110 +585,120 @@ export default function SendPage() {
                       🗑
                     </button>
                   </div>
-                  <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
-                    <span className="text-xs text-white">
-                      {new Date(capture.timestamp).toLocaleTimeString()}
-                    </span>
-                  </div>
-                </div>
-              ))}
-              
-              {recordings.map(recording => (
-                <div key={recording.id} className="relative group">
-                  <video 
-                    src={recording.url} 
-                    controls 
-                    className="w-full rounded-lg"
-                  />
-                  <div className="absolute bottom-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
-                    <button
-                      onClick={() => downloadCapture(recording)}
-                      className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
-                    >
-                      ⬇
-                    </button>
-                    <button
-                      onClick={() => deleteCapture(recording)}
-                      className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
-                    >
-                      🗑
-                    </button>
-                  </div>
                 </div>
               ))}
             </div>
-            
-            {capturedImages.length === 0 && recordings.length === 0 && (
-              <div className="text-center py-20">
-                <div className="text-6xl mb-4">📁</div>
-                <p className="text-gray-400">No captures yet</p>
-              </div>
-            )}
           </div>
         )}
       </div>
 
       {!showGallery && (
         <div className="bg-gray-800 p-4">
-          <div className="grid grid-cols-3 gap-3 mb-4">
-            <button
-              onClick={switchCamera}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold"
-            >
-              🔄 Switch
-            </button>
-            
-            <button
-              onClick={() => setShowReceiverList(!showReceiverList)}
-              className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold"
-            >
-              📥 Receivers ({receivers.length})
-            </button>
-            
-            <button
-              onClick={sendToSelected}
-              disabled={selectedReceivers.length === 0}
-              className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              📤 Send ({selectedReceivers.length})
-            </button>
-          </div>
+          {!isFieldScanMode ? (
+            <>
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <button
+                  onClick={switchCamera}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold"
+                >
+                  🔄 Switch
+                </button>
+                
+                <button
+                  onClick={() => setShowReceiverList(!showReceiverList)}
+                  className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold"
+                >
+                  📥 Receivers ({receivers.length})
+                </button>
+                
+                <button
+                  onClick={sendToSelected}
+                  disabled={selectedReceivers.length === 0}
+                  className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  📤 Send ({selectedReceivers.length})
+                </button>
+              </div>
 
-          <div className="grid grid-cols-3 gap-3 mb-4">
-            <button
-              onClick={capturePhoto}
-              disabled={uploading}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50"
-            >
-              {uploading ? '⏳' : '📸 Capture'}
-            </button>
-            
-            {!isRecording ? (
-              <button
-                onClick={startRecording}
-                className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold"
-              >
-                ⏺ Record
-              </button>
-            ) : (
-              <button
-                onClick={stopRecording}
-                className="bg-gray-600 hover:bg-gray-700 text-white px-6 py-3 rounded-lg font-semibold"
-              >
-                ⏹ Stop Rec
-              </button>
-            )}
-            
-            <button
-              onClick={stopCamera}
-              className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold"
-            >
-              ⏹ Stop
-            </button>
-          </div>
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <button
+                  onClick={capturePhoto}
+                  disabled={uploading}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50"
+                >
+                  {uploading ? '⏳' : '📸 Capture'}
+                </button>
+                
+                {!isRecording ? (
+                  <button
+                    onClick={startRecording}
+                    className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold"
+                  >
+                    ⏺ Record
+                  </button>
+                ) : (
+                  <button
+                    onClick={stopRecording}
+                    className="bg-gray-600 hover:bg-gray-700 text-white px-6 py-3 rounded-lg font-semibold"
+                  >
+                    ⏹ Stop Rec
+                  </button>
+                )}
+                
+                <button
+                  onClick={stopCamera}
+                  className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold"
+                >
+                  ⏹ Stop
+                </button>
+              </div>
 
-          {showReceiverList && (
-            <div className="bg-gray-700 rounded-lg p-4">
+              {fieldScanSettings?.enabled && (
+                <button
+                  onClick={startFieldScan}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-lg font-semibold"
+                >
+                  🌾 Start Field Scan
+                </button>
+              )}
+            </>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-white font-semibold">
+                  📸 {scanPhotos.length} / {fieldScanSettings?.maxPhotosPerScan || 100}
+                </span>
+                <span className="text-gray-300 text-sm">
+                  ⏱ Every {fieldScanSettings?.captureInterval || 5}s
+                </span>
+              </div>
+              
+              <div className="flex items-center gap-2 text-sm">
+                <span className={gpsData ? 'text-green-400' : 'text-red-400'}>
+                  📍 {gpsData ? `${gpsData.lat.toFixed(5)}, ${gpsData.lng.toFixed(5)} (±${gpsData.accuracy}m)` : 'Waiting for GPS...'}
+                </span>
+              </div>
+              {gpsError && <p className="text-red-400 text-xs">{gpsError}</p>}
+              
+              <div className="w-full bg-gray-700 rounded-full h-2">
+                <div
+                  className="h-2 rounded-full bg-emerald-500 transition-all"
+                  style={{ width: `${(scanPhotos.length / (fieldScanSettings?.maxPhotosPerScan || 100)) * 100}%` }}
+                />
+              </div>
+              
+              <button
+                onClick={stopFieldScan}
+                disabled={sendingToFarmVexa}
+                className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold w-full disabled:opacity-50"
+              >
+                {sendingToFarmVexa ? '⏳ Sending...' : `⏹ Stop & Send (${scanPhotos.length})`}
+              </button>
+            </div>
+          )}
+
+          {showReceiverList && !isFieldScanMode && (
+            <div className="bg-gray-700 rounded-lg p-4 mt-4">
               <h3 className="text-white font-bold mb-3">Select Receivers</h3>
               
               <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -556,13 +725,6 @@ export default function SendPage() {
                     </span>
                   </button>
                 ))}
-                
-                {receivers.length === 0 && (
-                  <div className="text-center py-8">
-                    <div className="text-3xl mb-2">📥</div>
-                    <p className="text-gray-400 text-sm">No receivers online</p>
-                  </div>
-                )}
               </div>
             </div>
           )}

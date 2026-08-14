@@ -7,6 +7,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [token, setToken] = useState(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [fieldScanSettings, setFieldScanSettings] = useState(null)
 
   useEffect(() => {
     const savedToken = localStorage.getItem('hdm_token')
@@ -24,6 +25,7 @@ export function AuthProvider({ children }) {
         headers: { Authorization: `Bearer ${authToken}` }
       })
       setUser(response.data.user)
+      setFieldScanSettings(response.data.user?.fieldScan || null)
     } catch (error) {
       localStorage.removeItem('hdm_token')
       setToken(null)
@@ -57,6 +59,7 @@ export function AuthProvider({ children }) {
     localStorage.setItem('hdm_token', newToken)
     setToken(newToken)
     setUser(userData)
+    setFieldScanSettings(userData?.farmvexaData?.fieldScan || null)
     return userData
   }
 
@@ -64,6 +67,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('hdm_token')
     setToken(null)
     setUser(null)
+    setFieldScanSettings(null)
   }
 
   return (
@@ -72,6 +76,7 @@ export function AuthProvider({ children }) {
       token,
       isAuthenticated: !!token,
       isLoading,
+      fieldScanSettings,
       login,
       register,
       loginWithFarmvexa,

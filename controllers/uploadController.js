@@ -3,7 +3,7 @@ const Capture = require('../models/Capture');
 
 exports.uploadImage = async (req, res) => {
   try {
-    const { dataUrl, senderName, receiverName } = req.body;
+    const { dataUrl, senderName, receiverName, gps, scanMode } = req.body;
     
     if (!dataUrl) {
       return res.status(400).json({ error: 'dataUrl is required' });
@@ -25,7 +25,9 @@ exports.uploadImage = async (req, res) => {
       cloudinaryPublicId: result.public_id,
       type: 'photo',
       senderName,
-      receiverName
+      receiverName,
+      scanMode: scanMode || false,
+      gps: gps || undefined
     });
     
     res.json({

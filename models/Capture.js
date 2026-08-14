@@ -24,6 +24,16 @@ const captureSchema = new mongoose.Schema({
   receiverName: String,
   size: Number,
   format: String,
+  scanMode: {
+    type: Boolean,
+    default: false
+  },
+  gps: {
+    lat: Number,
+    lng: Number,
+    accuracy: Number,
+    altitude: Number
+  },
   farmvexaContext: {
     farmId: String,
     farmName: String

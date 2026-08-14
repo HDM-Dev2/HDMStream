@@ -6,7 +6,7 @@ import api from '../api/axios'
 
 export default function ReceivePage() {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, fieldScanSettings } = useAuth()
   const { socket, connected, senders, error } = useSocket('receiver', user?.deviceName)
   
   const [streams, setStreams] = useState(new Map())
@@ -17,9 +17,15 @@ export default function ReceivePage() {
   const [uploading, setUploading] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   
+  const [isScanMode, setIsScanMode] = useState(false)
+  const [scanPhotoCount, setScanPhotoCount] = useState(0)
+  const [scanStartTime, setScanStartTime] = useState(null)
+  const [scanElapsed, setScanElapsed] = useState(0)
+  
   const mediaRecorder = useRef(null)
   const recordedChunks = useRef([])
   const currentStreamRef = useRef(null)
+  const scanTimerRef = useRef(null)
 
   const isFarmvexaUser = user?.authProvider === 'farmvexa'
 
@@ -34,6 +40,19 @@ export default function ReceivePage() {
       setStatus('Ready to receive...')
     }
   }, [senders])
+
+  useEffect(() => {
+    if (isScanMode && scanStartTime) {
+      scanTimerRef.current = setInterval(() => {
+        setScanElapsed(Math.floor((Date.now() - scanStartTime) / 1000))
+      }, 1000)
+    }
+    return () => {
+      if (scanTimerRef.current) {
+        clearInterval(scanTimerRef.current)
+      }
+    }
+  }, [isScanMode, scanStartTime])
 
   useEffect(() => {
     if (!socket) return
@@ -58,6 +77,25 @@ export default function ReceivePage() {
       setStatus('Receiving stream...')
     })
 
+    socket.on('scan-started', (data) => {
+      setIsScanMode(true)
+      setScanPhotoCount(0)
+      setScanStartTime(Date.now())
+      setStatus('Field scan started')
+    })
+
+    socket.on('scan-photo-captured', (data) => {
+      setScanPhotoCount(data.count || (prev => prev + 1))
+      setStatus(`📸 Captured ${data.count} photos`)
+    })
+
+    socket.on('scan-stopped', (data) => {
+      setIsScanMode(false)
+      setScanStartTime(null)
+      setScanElapsed(0)
+      setStatus(`✅ Scan complete - ${data.totalPhotos} photos`)
+    })
+
     socket.on('sender-available', () => {
       setStatus('Sender found - Waiting for stream...')
     })
@@ -77,10 +115,19 @@ export default function ReceivePage() {
 
     return () => {
       socket.off('frame')
+      socket.off('scan-started')
+      socket.off('scan-photo-captured')
+      socket.off('scan-stopped')
       socket.off('sender-available')
       socket.off('sender-disconnected')
     }
   }, [socket])
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
 
   const fetchCaptures = async () => {
     try {
@@ -138,7 +185,6 @@ export default function ReceivePage() {
       setCapturedImages(prev => [capture, ...prev])
       setStatus('Photo captured!')
     } catch (error) {
-      console.error('Upload failed:', error)
       setStatus('Upload failed')
     } finally {
       setUploading(false)
@@ -154,10 +200,7 @@ export default function ReceivePage() {
     if (isRecording) return
 
     try {
-      const blob = await fetch(currentStreamRef.current.url).then(r => r.blob())
-      const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: false })
-      
-      const recorder = new MediaRecorder(stream)
+      const recorder = new MediaRecorder(new MediaStream())
       const chunks = []
       recordedChunks.current = chunks
       
@@ -189,7 +232,6 @@ export default function ReceivePage() {
       setIsRecording(true)
       setStatus('Recording started...')
       
-      // Record frames from stream
       const interval = setInterval(async () => {
         if (currentStreamRef.current?.url) {
           const frameBlob = await fetch(currentStreamRef.current.url).then(r => r.blob())
@@ -199,7 +241,6 @@ export default function ReceivePage() {
       
       recorder._frameInterval = interval
     } catch (error) {
-      console.error('Error starting recording:', error)
       setStatus('Recording failed')
     }
   }
@@ -325,6 +366,19 @@ export default function ReceivePage() {
           </div>
         </div>
       </div>
+
+      {isScanMode && (
+        <div className="bg-emerald-900/50 border-b border-emerald-700 px-4 py-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <span className="text-emerald-400 font-bold">🌾 Field Scan</span>
+              <span className="text-white">📸 {scanPhotoCount} photos</span>
+              <span className="text-emerald-300">⏱ {formatTime(scanElapsed)}</span>
+            </div>
+            <span className="text-emerald-400 text-sm animate-pulse">● Scanning...</span>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 p-4">
         {!showGallery ? (
