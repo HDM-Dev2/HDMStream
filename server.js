@@ -4,7 +4,6 @@ const socketIO = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { execSync } = require('child_process');
 require('dotenv').config();
 
 const connectDB = require('./config/db');
@@ -43,54 +42,44 @@ app.get('/api/health', (req, res) => {
 socketController(io);
 
 const publicDir = path.join(__dirname, 'public');
-const frontendDir = path.join(__dirname, 'frontend');
-const distDir = path.join(frontendDir, 'dist');
+const distDir = path.join(__dirname, 'frontend', 'dist');
 
-const ensureFrontendBuild = () => {
+const copyDistToPublic = () => {
   if (!fs.existsSync(distDir)) {
-    logger.info('Frontend build not found. Building...');
-    try {
-      execSync('npm install', { cwd: frontendDir, stdio: 'inherit' });
-      execSync('npx vite build', { cwd: frontendDir, stdio: 'inherit' });
-      logger.info('Frontend build completed');
-    } catch (error) {
-      logger.error('Failed to build frontend:', error.message);
-    }
+    logger.warn('frontend/dist not found. Run "npm run build" first.');
+    return false;
   }
 
-  if (fs.existsSync(distDir)) {
-    if (!fs.existsSync(publicDir)) {
-      fs.mkdirSync(publicDir, { recursive: true });
-    }
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
 
-    const copyRecursive = (src, dest) => {
-      const exists = fs.existsSync(src);
-      const stats = exists && fs.statSync(src);
-      const isDirectory = exists && stats.isDirectory();
-      
-      if (isDirectory) {
-        if (!fs.existsSync(dest)) {
-          fs.mkdirSync(dest);
-        }
-        fs.readdirSync(src).forEach(childItemName => {
-          copyRecursive(
-            path.join(src, childItemName),
-            path.join(dest, childItemName)
-          );
-        });
-      } else {
-        fs.copyFileSync(src, dest);
+  const copyRecursive = (src, dest) => {
+    const exists = fs.existsSync(src);
+    const stats = exists && fs.statSync(src);
+    const isDirectory = exists && stats.isDirectory();
+    
+    if (isDirectory) {
+      if (!fs.existsSync(dest)) {
+        fs.mkdirSync(dest);
       }
-    };
+      fs.readdirSync(src).forEach(childItemName => {
+        copyRecursive(
+          path.join(src, childItemName),
+          path.join(dest, childItemName)
+        );
+      });
+    } else {
+      fs.copyFileSync(src, dest);
+    }
+  };
 
-    copyRecursive(distDir, publicDir);
-    logger.info('Frontend copied to public directory');
-  } else {
-    logger.warn('Frontend build failed. Serving API only.');
-  }
+  copyRecursive(distDir, publicDir);
+  logger.info('Frontend dist copied to public directory');
+  return true;
 };
 
-ensureFrontendBuild();
+const frontendReady = copyDistToPublic();
 
 app.use(express.static(publicDir));
 
@@ -101,7 +90,7 @@ app.get('*', (req, res) => {
   } else {
     res.status(500).json({ 
       error: 'Frontend not built', 
-      message: 'Run "cd frontend && npm install && npm run build" manually' 
+      message: 'Run "npm run build" to build frontend' 
     });
   }
 });
@@ -113,4 +102,9 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
+  if (frontendReady) {
+    logger.info('Frontend ready');
+  } else {
+    logger.warn('Frontend not available - API only');
+  }
 });
