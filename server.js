@@ -32,7 +32,7 @@ app.use(logger.requestLogger());
 app.use('/api/camera', cameraRoutes);
 app.use('/api/socket', socketRoutes);
 
-app.get('/health', (req, res) => {
+app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -43,13 +43,15 @@ app.get('/health', (req, res) => {
 socketController(io);
 
 const publicDir = path.join(__dirname, 'public');
-const distDir = path.join(__dirname, 'frontend', 'dist');
+const frontendDir = path.join(__dirname, 'frontend');
+const distDir = path.join(frontendDir, 'dist');
 
 const ensureFrontendBuild = () => {
   if (!fs.existsSync(distDir)) {
     logger.info('Frontend build not found. Building...');
     try {
-      execSync('cd frontend && npm install && npm run build', { stdio: 'inherit' });
+      execSync('npm install', { cwd: frontendDir, stdio: 'inherit' });
+      execSync('npx vite build', { cwd: frontendDir, stdio: 'inherit' });
       logger.info('Frontend build completed');
     } catch (error) {
       logger.error('Failed to build frontend:', error.message);
@@ -83,6 +85,8 @@ const ensureFrontendBuild = () => {
 
     copyRecursive(distDir, publicDir);
     logger.info('Frontend copied to public directory');
+  } else {
+    logger.warn('Frontend build failed. Serving API only.');
   }
 };
 
@@ -91,7 +95,15 @@ ensureFrontendBuild();
 app.use(express.static(publicDir));
 
 app.get('*', (req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
+  const indexPath = path.join(publicDir, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(500).json({ 
+      error: 'Frontend not built', 
+      message: 'Run "cd frontend && npm install && npm run build" manually' 
+    });
+  }
 });
 
 app.use((err, req, res, next) => {
