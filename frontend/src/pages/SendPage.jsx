@@ -4,7 +4,7 @@ import { useSocket } from '../hooks/useSocket'
 
 export default function SendPage() {
   const navigate = useNavigate()
-  const { socket, connected, receivers, error, sendOffer, sendIceCandidate } = useSocket('sender')
+  const { socket, connected, receivers, error } = useSocket('sender')
   
   const [status, setStatus] = useState('Starting camera...')
   const [isStreaming, setIsStreaming] = useState(false)
@@ -20,8 +20,6 @@ export default function SendPage() {
   
   const localStream = useRef(null)
   const videoRef = useRef(null)
-  const canvasRef = useRef(null)
-  const peerConnections = useRef(new Map())
   const mediaRecorder = useRef(null)
   const recordedChunks = useRef([])
   const frameInterval = useRef(null)
@@ -70,7 +68,7 @@ export default function SendPage() {
     return 'sender-' + Math.random().toString(36).substring(2, 15)
   }
 
-  const handleRegister = async () => {
+  const handleRegister = () => {
     const name = deviceName.trim() || `Camera-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
     setDeviceName(name)
     localStorage.setItem('senderName', name)
@@ -92,8 +90,8 @@ export default function SendPage() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: useFrontCamera ? 'user' : 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          width: { ideal: 640 },
+          height: { ideal: 480 }
         },
         audio: false
       })
@@ -112,17 +110,37 @@ export default function SendPage() {
 
   const captureFrame = useCallback(() => {
     const video = videoRef.current
-    if (!video || !video.videoWidth) return null
+    if (!video || !video.videoWidth) return
     
     const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
+    canvas.width = 640
+    canvas.height = 480
     
     const ctx = canvas.getContext('2d')
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    ctx.drawImage(video, 0, 0, 640, 480)
     
-    return canvas.toDataURL('image/jpeg', 0.8)
-  }, [])
+    canvas.toBlob((blob) => {
+      if (blob && socket && socket.connected) {
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          const arrayBuffer = reader.result
+          if (selectedReceivers.length === 1) {
+            socket.emit('frame', {
+              frameData: arrayBuffer,
+              receiverId: selectedReceivers[0],
+              senderName: deviceName
+            })
+          } else if (selectedReceivers.length > 1) {
+            socket.emit('frame-broadcast', {
+              frameData: arrayBuffer,
+              senderName: deviceName
+            })
+          }
+        }
+        reader.readAsArrayBuffer(blob)
+      }
+    }, 'image/jpeg', 0.5)
+  }, [socket, selectedReceivers, deviceName])
 
   const startStreaming = useCallback(() => {
     if (frameInterval.current) {
@@ -130,23 +148,9 @@ export default function SendPage() {
     }
     
     frameInterval.current = setInterval(() => {
-      const frameData = captureFrame()
-      if (frameData && socket) {
-        if (selectedReceivers.length === 1) {
-          socket.emit('frame', {
-            frameData,
-            receiverId: selectedReceivers[0],
-            senderName: deviceName
-          })
-        } else {
-          socket.emit('frame-broadcast', {
-            frameData,
-            senderName: deviceName
-          })
-        }
-      }
-    }, 100)
-  }, [socket, selectedReceivers, deviceName, captureFrame])
+      captureFrame()
+    }, 200)
+  }, [captureFrame])
 
   const stopStreaming = useCallback(() => {
     if (frameInterval.current) {
@@ -155,7 +159,7 @@ export default function SendPage() {
     }
   }, [])
 
-  const sendToSelected = async () => {
+  const sendToSelected = () => {
     if (selectedReceivers.length === 0) {
       setStatus('Please select at least one receiver')
       return
@@ -180,8 +184,6 @@ export default function SendPage() {
       localStream.current.getTracks().forEach(track => track.stop())
       localStream.current = null
     }
-    peerConnections.current.forEach(pc => pc.close())
-    peerConnections.current.clear()
     setIsStreaming(false)
     setStatus('Camera stopped')
     setSelectedReceivers([])

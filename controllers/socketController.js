@@ -1,5 +1,4 @@
 const Camera = require('../models/Camera');
-const Room = require('../models/Room');
 const Device = require('../models/Device');
 
 const activeSenders = new Map();
@@ -26,12 +25,6 @@ module.exports = (io) => {
         await Device.findOneAndUpdate(
           { deviceId, type: 'sender' },
           { name, lastSeen: new Date() },
-          { upsert: true, new: true }
-        );
-        
-        await Camera.findOneAndUpdate(
-          { deviceId },
-          { status: 'online', socketId: socket.id, name, lastActive: new Date() },
           { upsert: true, new: true }
         );
         
@@ -144,44 +137,9 @@ module.exports = (io) => {
       }
     });
 
-    socket.on('offer', (data) => {
-      if (data.target) {
-        io.to(data.target).emit('offer', {
-          offer: data.offer,
-          from: socket.id,
-          fromDeviceId: socket.deviceId,
-          fromName: socket.name
-        });
-      }
-    });
-
-    socket.on('answer', (data) => {
-      if (data.target) {
-        io.to(data.target).emit('answer', {
-          answer: data.answer,
-          from: socket.id
-        });
-      }
-    });
-
-    socket.on('ice-candidate', (data) => {
-      if (data.target) {
-        io.to(data.target).emit('ice-candidate', {
-          candidate: data.candidate,
-          from: socket.id
-        });
-      }
-    });
-
     socket.on('disconnect', async () => {
       if (socket.role === 'sender') {
         activeSenders.delete(socket.id);
-        if (socket.deviceId) {
-          await Camera.findOneAndUpdate(
-            { deviceId: socket.deviceId },
-            { status: 'offline', socketId: null, lastActive: new Date() }
-          );
-        }
         io.emit('senders-update', Array.from(activeSenders.values()));
         io.emit('sender-disconnected', socket.id);
       }

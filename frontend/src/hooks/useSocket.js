@@ -22,16 +22,16 @@ export function useSocket(role, deviceName = '') {
 
   useEffect(() => {
     const newSocket = io({
-      transports: ['polling', 'websocket'],
+      transports: ['polling'],
+      upgrade: false,
       reconnection: true,
       reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 3000,
+      timeout: 10000,
       autoConnect: true,
       forceNew: true,
-      upgrade: true,
-      rememberUpgrade: true
+      maxHttpBufferSize: 5e6
     })
 
     socketRef.current = newSocket
@@ -44,7 +44,7 @@ export function useSocket(role, deviceName = '') {
       if (currentRole === 'sender') {
         newSocket.emit('sender-join', {
           deviceId: newSocket.id,
-          name: `Camera-${newSocket.id.slice(0, 4)}`
+          name: name
         })
       } else if (currentRole === 'receiver') {
         newSocket.emit('receiver-join', {

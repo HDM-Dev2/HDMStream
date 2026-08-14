@@ -4,23 +4,15 @@ import { useSocket } from '../hooks/useSocket'
 
 export default function ReceivePage() {
   const navigate = useNavigate()
-  const { socket, connected, senders, error, sendAnswer, sendIceCandidate } = useSocket('receiver')
+  const { socket, connected, senders, error } = useSocket('receiver')
   
   const [streams, setStreams] = useState(new Map())
   const [status, setStatus] = useState('Ready to receive...')
   const [capturedImages, setCapturedImages] = useState([])
-  const [recordings, setRecordings] = useState([])
   const [showGallery, setShowGallery] = useState(false)
-  const [recordingStates, setRecordingStates] = useState(new Map())
   const [deviceName, setDeviceName] = useState('')
   const [showNamePrompt, setShowNamePrompt] = useState(true)
   
-  const peerConnections = useRef(new Map())
-  const videoRefs = useRef(new Map())
-  const canvasRefs = useRef(new Map())
-  const imgRefs = useRef(new Map())
-  const mediaRecorders = useRef(new Map())
-  const recordedChunks = useRef(new Map())
   const deviceIdRef = useRef(null)
 
   useEffect(() => {
@@ -66,22 +58,33 @@ export default function ReceivePage() {
     socket.on('frame', (data) => {
       const { frameData, senderId, senderName } = data
       
+      const blob = new Blob([frameData], { type: 'image/jpeg' })
+      const url = URL.createObjectURL(blob)
+      
       setStreams(prev => {
         const newMap = new Map(prev)
-        newMap.set(senderId, { type: 'relay', frameData, senderName })
+        const oldData = newMap.get(senderId)
+        if (oldData && oldData.url) {
+          URL.revokeObjectURL(oldData.url)
+        }
+        newMap.set(senderId, { type: 'relay', url, senderName })
         return newMap
       })
       
       setStatus('Receiving stream...')
     })
 
-    socket.on('sender-available', (data) => {
+    socket.on('sender-available', () => {
       setStatus('Sender found - Waiting for stream...')
     })
 
     socket.on('sender-disconnected', (senderId) => {
       setStreams(prev => {
         const newMap = new Map(prev)
+        const oldData = newMap.get(senderId)
+        if (oldData && oldData.url) {
+          URL.revokeObjectURL(oldData.url)
+        }
         newMap.delete(senderId)
         return newMap
       })
@@ -99,7 +102,7 @@ export default function ReceivePage() {
     return 'receiver-' + Math.random().toString(36).substring(2, 15)
   }
 
-  const handleRegister = async () => {
+  const handleRegister = () => {
     const name = deviceName.trim() || `Receiver-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
     setDeviceName(name)
     localStorage.setItem('receiverName', name)
@@ -112,18 +115,16 @@ export default function ReceivePage() {
 
   const capturePhoto = (senderId) => {
     const streamData = streams.get(senderId)
-    if (!streamData) return
+    if (!streamData || !streamData.url) return
     
-    if (streamData.type === 'relay') {
-      const capture = {
-        id: Date.now(),
-        type: 'photo',
-        dataUrl: streamData.frameData,
-        timestamp: new Date().toISOString()
-      }
-      setCapturedImages(prev => [capture, ...prev])
-      setStatus('Photo captured!')
+    const capture = {
+      id: Date.now(),
+      type: 'photo',
+      dataUrl: streamData.url,
+      timestamp: new Date().toISOString()
     }
+    setCapturedImages(prev => [capture, ...prev])
+    setStatus('Photo captured!')
   }
 
   const downloadCapture = (capture) => {
@@ -228,20 +229,11 @@ export default function ReceivePage() {
               }`}>
                 {Array.from(streams.entries()).map(([senderId, streamData]) => (
                   <div key={senderId} className="relative bg-black rounded-lg overflow-hidden group">
-                    {streamData.type === 'relay' ? (
-                      <img 
-                        src={streamData.frameData}
-                        alt="Stream"
-                        className="w-full h-auto"
-                      />
-                    ) : (
-                      <video
-                        autoPlay
-                        playsInline
-                        srcObject={streamData.stream}
-                        className="w-full h-auto"
-                      />
-                    )}
+                    <img 
+                      src={streamData.url}
+                      alt="Stream"
+                      className="w-full h-auto"
+                    />
                     
                     <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
                       <span className="text-xs text-white">

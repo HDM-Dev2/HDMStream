@@ -7,9 +7,9 @@ module.exports = {
   pingTimeout: 60000,
   pingInterval: 25000,
   upgradeTimeout: 30000,
-  maxHttpBufferSize: 1e6,
+  maxHttpBufferSize: 5e6,
   transports: ['polling', 'websocket'],
-  allowUpgrades: true,
+  allowUpgrades: false,
   perMessageDeflate: {
     threshold: 1024
   },
