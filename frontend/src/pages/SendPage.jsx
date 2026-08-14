@@ -3,6 +3,23 @@ import { useNavigate } from 'react-router-dom'
 import { useSocket } from '../hooks/useSocket'
 import api from '../api/axios'
 
+const rtcConfig = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ]
+}
+
 export default function SendPage() {
   const navigate = useNavigate()
   const { socket, connected, receivers, error, sendOffer, sendIceCandidate } = useSocket('sender')
@@ -115,12 +132,7 @@ export default function SendPage() {
     if (peerConnections.current.has(receiverId)) return
 
     try {
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      })
+      const pc = new RTCPeerConnection(rtcConfig)
 
       peerConnections.current.set(receiverId, pc)
 
