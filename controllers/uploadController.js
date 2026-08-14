@@ -14,18 +14,13 @@ exports.uploadImage = async (req, res) => {
       transformation: [
         { quality: 'auto' },
         { fetch_format: 'auto' }
-      ]
-    })
-    
-    const downloadUrl = cloudinary.url(result.public_id, {
-      flags: 'attachment',
-      resource_type: 'image'
+      ],
+      secure: true
     })
     
     res.json({
       success: true,
       url: result.secure_url,
-      downloadUrl: downloadUrl,
       publicId: result.public_id
     })
   } catch (error) {

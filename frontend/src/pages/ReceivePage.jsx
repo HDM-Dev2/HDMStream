@@ -136,7 +136,6 @@ export default function ReceivePage() {
         id: response.data.publicId,
         type: 'photo',
         url: response.data.url,
-        downloadUrl: response.data.downloadUrl,
         timestamp: new Date().toISOString()
       }
       
@@ -167,13 +166,24 @@ export default function ReceivePage() {
     }
   }
 
-  const downloadCapture = (capture) => {
-    const link = document.createElement('a')
-    link.href = capture.downloadUrl || capture.url
-    link.download = `hdm-capture-${capture.timestamp}.jpg`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+  const downloadCapture = async (capture) => {
+    try {
+      const response = await fetch(capture.url)
+      const blob = await response.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      
+      const link = document.createElement('a')
+      link.href = blobUrl
+      link.download = `hdm-capture-${capture.timestamp}.jpg`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      
+      URL.revokeObjectURL(blobUrl)
+    } catch (error) {
+      console.error('Download failed:', error)
+      window.open(capture.url, '_blank')
+    }
   }
 
   if (showNamePrompt) {
@@ -325,7 +335,7 @@ export default function ReceivePage() {
                       onClick={() => downloadCapture(capture)}
                       className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
                     >
-                      ⬇ Download
+                      ⬇
                     </button>
                     <button
                       onClick={() => deleteCapture(capture)}

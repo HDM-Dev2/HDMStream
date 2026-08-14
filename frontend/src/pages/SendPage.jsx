@@ -240,7 +240,6 @@ export default function SendPage() {
         id: response.data.publicId,
         type: 'photo',
         url: response.data.url,
-        downloadUrl: response.data.downloadUrl,
         timestamp: new Date().toISOString()
       }
       
@@ -305,14 +304,25 @@ export default function SendPage() {
     }
   }
 
-  const downloadCapture = (capture) => {
+  const downloadCapture = async (capture) => {
     if (capture.type === 'photo') {
-      const link = document.createElement('a')
-      link.href = capture.downloadUrl || capture.url
-      link.download = `hdm-capture-${capture.timestamp}.jpg`
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
+      try {
+        const response = await fetch(capture.url)
+        const blob = await response.blob()
+        const blobUrl = URL.createObjectURL(blob)
+        
+        const link = document.createElement('a')
+        link.href = blobUrl
+        link.download = `hdm-capture-${capture.timestamp}.jpg`
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        
+        URL.revokeObjectURL(blobUrl)
+      } catch (error) {
+        console.error('Download failed:', error)
+        window.open(capture.url, '_blank')
+      }
     } else {
       const link = document.createElement('a')
       link.href = capture.url
