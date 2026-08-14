@@ -11,6 +11,10 @@ const api = axios.create({
 
 api.interceptors.request.use(
   (config) => {
+    const token = localStorage.getItem('hdm_token')
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
     if (config.method === 'get') {
       config.params = {
         ...config.params,
@@ -29,6 +33,12 @@ api.interceptors.response.use(
     return response
   },
   (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('hdm_token')
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
     return Promise.reject(error)
   }
 )

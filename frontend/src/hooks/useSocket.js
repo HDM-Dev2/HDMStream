@@ -21,6 +21,8 @@ export function useSocket(role, deviceName = '') {
   }, [role])
 
   useEffect(() => {
+    const token = localStorage.getItem('hdm_token')
+    
     const newSocket = io({
       transports: ['polling'],
       upgrade: false,
@@ -31,7 +33,8 @@ export function useSocket(role, deviceName = '') {
       timeout: 10000,
       autoConnect: true,
       forceNew: true,
-      maxHttpBufferSize: 5e6
+      maxHttpBufferSize: 5e6,
+      auth: { token }
     })
 
     socketRef.current = newSocket
@@ -39,18 +42,12 @@ export function useSocket(role, deviceName = '') {
 
     const joinRoom = () => {
       const currentRole = roleRef.current
-      const name = deviceNameRef.current || `${currentRole}-${newSocket.id.slice(0, 4)}`
+      const name = deviceNameRef.current
       
       if (currentRole === 'sender') {
-        newSocket.emit('sender-join', {
-          deviceId: newSocket.id,
-          name: name
-        })
+        newSocket.emit('sender-join', { name })
       } else if (currentRole === 'receiver') {
-        newSocket.emit('receiver-join', {
-          deviceId: newSocket.id,
-          name: name
-        })
+        newSocket.emit('receiver-join', { name })
       }
     }
 
@@ -75,10 +72,6 @@ export function useSocket(role, deviceName = '') {
       setConnected(true)
       setError(null)
       joinRoom()
-    })
-
-    newSocket.on('reconnect_failed', () => {
-      setError('Failed to reconnect')
     })
 
     newSocket.on('senders-update', (sendersList) => {
@@ -125,44 +118,6 @@ export function useSocket(role, deviceName = '') {
     }
   }, [])
 
-  const joinRoom = useCallback((roomId) => {
-    emit('join-room', roomId)
-  }, [emit])
-
-  const leaveRoom = useCallback((roomId) => {
-    emit('leave-room', roomId)
-  }, [emit])
-
-  const sendOffer = useCallback((target, offer) => {
-    emit('offer', { target, offer })
-  }, [emit])
-
-  const sendAnswer = useCallback((target, answer) => {
-    emit('answer', { target, answer })
-  }, [emit])
-
-  const sendIceCandidate = useCallback((target, candidate) => {
-    emit('ice-candidate', { target, candidate })
-  }, [emit])
-
-  const updateDeviceName = useCallback((name) => {
-    deviceNameRef.current = name
-    if (socketRef.current && socketRef.current.connected) {
-      const currentRole = roleRef.current
-      if (currentRole === 'receiver') {
-        socketRef.current.emit('receiver-join', {
-          deviceId: socketRef.current.id,
-          name: name
-        })
-      } else if (currentRole === 'sender') {
-        socketRef.current.emit('sender-join', {
-          deviceId: socketRef.current.id,
-          name: name
-        })
-      }
-    }
-  }, [])
-
   return {
     socket,
     connected,
@@ -170,12 +125,6 @@ export function useSocket(role, deviceName = '') {
     receivers,
     error,
     emit,
-    joinRoom,
-    leaveRoom,
-    sendOffer,
-    sendAnswer,
-    sendIceCandidate,
-    updateDeviceName,
     socketId: socketRef.current?.id
   }
 }

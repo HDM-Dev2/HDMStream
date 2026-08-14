@@ -3,8 +3,12 @@ const mongoose = require('mongoose');
 const deviceSchema = new mongoose.Schema({
   deviceId: {
     type: String,
-    required: true,
-    unique: true
+    required: true
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
   },
   name: {
     type: String,
@@ -23,6 +27,6 @@ const deviceSchema = new mongoose.Schema({
   timestamps: true
 });
 
-deviceSchema.index({ deviceId: 1, type: 1 });
+deviceSchema.index({ deviceId: 1, userId: 1, type: 1 }, { unique: true });
 
 module.exports = mongoose.model('Device', deviceSchema);

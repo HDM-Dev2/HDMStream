@@ -1,19 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSocket } from '../hooks/useSocket'
+import { useAuth } from '../context/AuthContext'
 import api from '../api/axios'
 
 export default function SendPage() {
   const navigate = useNavigate()
-  const { socket, connected, receivers, error } = useSocket('sender')
+  const { user } = useAuth()
+  const { socket, connected, receivers, error } = useSocket('sender', user?.deviceName)
   
   const [status, setStatus] = useState('Starting camera...')
   const [isStreaming, setIsStreaming] = useState(false)
   const [useFrontCamera, setUseFrontCamera] = useState(false)
   const [selectedReceivers, setSelectedReceivers] = useState([])
   const [showReceiverList, setShowReceiverList] = useState(false)
-  const [deviceName, setDeviceName] = useState('')
-  const [showNamePrompt, setShowNamePrompt] = useState(true)
   const [capturedImages, setCapturedImages] = useState([])
   const [recordings, setRecordings] = useState([])
   const [showGallery, setShowGallery] = useState(false)
@@ -25,38 +25,12 @@ export default function SendPage() {
   const mediaRecorder = useRef(null)
   const recordedChunks = useRef([])
   const frameInterval = useRef(null)
-  const deviceIdRef = useRef(null)
 
   useEffect(() => {
-    deviceIdRef.current = localStorage.getItem('senderDeviceId') || generateDeviceId()
-    localStorage.setItem('senderDeviceId', deviceIdRef.current)
-    
-    const savedName = localStorage.getItem('senderName')
-    if (savedName) {
-      setDeviceName(savedName)
-      setShowNamePrompt(false)
-      startCamera()
-    }
+    startCamera()
+    fetchCaptures()
+    return () => stopCamera()
   }, [])
-
-  useEffect(() => {
-    if (!socket) return
-    
-    socket.emit('get-device-name', { deviceId: deviceIdRef.current, type: 'sender' })
-    
-    socket.on('device-name-found', (data) => {
-      if (data.name) {
-        setDeviceName(data.name)
-        localStorage.setItem('senderName', data.name)
-        setShowNamePrompt(false)
-        startCamera()
-      }
-    })
-    
-    return () => {
-      socket.off('device-name-found')
-    }
-  }, [socket])
 
   useEffect(() => {
     if (receivers.length > 0) {
@@ -66,21 +40,19 @@ export default function SendPage() {
     }
   }, [receivers])
 
-  const generateDeviceId = () => {
-    return 'sender-' + Math.random().toString(36).substring(2, 15)
-  }
-
-  const handleRegister = () => {
-    const name = deviceName.trim() || `Camera-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
-    setDeviceName(name)
-    localStorage.setItem('senderName', name)
-    setShowNamePrompt(false)
-    
-    if (socket) {
-      socket.emit('register-device', { deviceId: deviceIdRef.current, name, type: 'sender' })
+  const fetchCaptures = async () => {
+    try {
+      const response = await api.get('/captures')
+      setCapturedImages(response.data.captures.filter(c => c.type === 'photo').map(c => ({
+        id: c.id,
+        type: 'photo',
+        url: c.cloudinaryUrl,
+        cloudinaryPublicId: c.cloudinaryPublicId,
+        timestamp: c.createdAt
+      })))
+    } catch (error) {
+      console.error('Failed to fetch captures:', error)
     }
-    
-    startCamera()
   }
 
   const startCamera = async () => {
@@ -130,19 +102,19 @@ export default function SendPage() {
             socket.emit('frame', {
               frameData: arrayBuffer,
               receiverId: selectedReceivers[0],
-              senderName: deviceName
+              senderName: user?.deviceName
             })
           } else if (selectedReceivers.length > 1) {
             socket.emit('frame-broadcast', {
               frameData: arrayBuffer,
-              senderName: deviceName
+              senderName: user?.deviceName
             })
           }
         }
         reader.readAsArrayBuffer(blob)
       }
     }, 'image/jpeg', 0.5)
-  }, [socket, selectedReceivers, deviceName])
+  }, [socket, selectedReceivers, user])
 
   const startStreaming = useCallback(() => {
     if (frameInterval.current) {
@@ -220,7 +192,7 @@ export default function SendPage() {
     if (!video || !video.videoWidth) return
 
     setUploading(true)
-    setStatus('Uploading to Cloudinary...')
+    setStatus('Uploading...')
 
     try {
       const canvas = document.createElement('canvas')
@@ -234,17 +206,21 @@ export default function SendPage() {
       
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
       
-      const response = await api.post('/upload', { dataUrl })
+      const response = await api.post('/upload', { 
+        dataUrl,
+        senderName: user?.deviceName
+      })
       
       const capture = {
-        id: response.data.publicId,
+        id: response.data.captureId,
         type: 'photo',
         url: response.data.url,
+        cloudinaryPublicId: response.data.publicId,
         timestamp: new Date().toISOString()
       }
       
       setCapturedImages(prev => [capture, ...prev])
-      setStatus('Photo captured and uploaded!')
+      setStatus('Photo captured!')
     } catch (error) {
       console.error('Upload failed:', error)
       setStatus('Upload failed')
@@ -320,7 +296,6 @@ export default function SendPage() {
         
         URL.revokeObjectURL(blobUrl)
       } catch (error) {
-        console.error('Download failed:', error)
         window.open(capture.url, '_blank')
       }
     } else {
@@ -336,26 +311,21 @@ export default function SendPage() {
   const deleteCapture = async (capture) => {
     if (capture.type === 'photo') {
       try {
-        await api.delete('/upload', { data: { publicId: capture.id } })
+        await api.delete('/upload', { 
+          data: { 
+            publicId: capture.cloudinaryPublicId,
+            captureId: capture.id
+          } 
+        })
         setCapturedImages(prev => prev.filter(c => c.id !== capture.id))
         setStatus('Photo deleted')
       } catch (error) {
-        console.error('Delete failed:', error)
         setStatus('Delete failed')
       }
     } else {
       URL.revokeObjectURL(capture.url)
       setRecordings(prev => prev.filter(r => r.id !== capture.id))
       setStatus('Recording deleted')
-    }
-  }
-
-  const clearAllCaptures = async () => {
-    for (const capture of capturedImages) {
-      await deleteCapture(capture)
-    }
-    for (const recording of recordings) {
-      await deleteCapture(recording)
     }
   }
 
@@ -378,54 +348,6 @@ export default function SendPage() {
     }
   }, [stopStreaming])
 
-  if (showNamePrompt) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="bg-gray-800 rounded-xl shadow-2xl p-8 w-full max-w-md">
-          <div className="text-center mb-8">
-            <div className="text-6xl mb-4">📤</div>
-            <h1 className="text-3xl font-bold text-white mb-2">Sender Setup</h1>
-            <p className="text-gray-400">Enter a device name for this camera</p>
-          </div>
-
-          <div className="space-y-4">
-            <input
-              type="text"
-              value={deviceName}
-              onChange={(e) => setDeviceName(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleRegister()}
-              placeholder={`Camera-${Math.random().toString(36).substring(2, 6).toUpperCase()}`}
-              className="w-full px-4 py-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-
-            <button
-              onClick={handleRegister}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition"
-            >
-              Start Camera
-            </button>
-
-            <button
-              onClick={() => {
-                const autoName = `Camera-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
-                setDeviceName(autoName)
-                localStorage.setItem('senderName', autoName)
-                setShowNamePrompt(false)
-                if (socket) {
-                  socket.emit('register-device', { deviceId: deviceIdRef.current, name: autoName, type: 'sender' })
-                }
-                startCamera()
-              }}
-              className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 rounded-lg transition"
-            >
-              Auto-generate Name
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="min-h-screen flex flex-col">
       <div className="bg-gray-800 p-4">
@@ -444,7 +366,7 @@ export default function SendPage() {
             >
               📁 Gallery ({capturedImages.length + recordings.length})
             </button>
-            <span className="text-sm text-gray-300">{deviceName}</span>
+            <span className="text-sm text-gray-300">{user?.deviceName}</span>
             <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
             <span className="text-sm text-gray-300">{receivers.length} online</span>
           </div>
@@ -479,17 +401,7 @@ export default function SendPage() {
           </>
         ) : (
           <div className="p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold">Gallery ({capturedImages.length + recordings.length})</h2>
-              {(capturedImages.length > 0 || recordings.length > 0) && (
-                <button
-                  onClick={clearAllCaptures}
-                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm"
-                >
-                  🗑 Clear All
-                </button>
-              )}
-            </div>
+            <h2 className="text-xl font-bold mb-4">Gallery ({capturedImages.length + recordings.length})</h2>
             
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {capturedImages.map(capture => (
@@ -543,11 +455,6 @@ export default function SendPage() {
                       🗑
                     </button>
                   </div>
-                  <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
-                    <span className="text-xs text-white">
-                      {new Date(recording.timestamp).toLocaleTimeString()}
-                    </span>
-                  </div>
                 </div>
               ))}
             </div>
@@ -555,7 +462,7 @@ export default function SendPage() {
             {capturedImages.length === 0 && recordings.length === 0 && (
               <div className="text-center py-20">
                 <div className="text-6xl mb-4">📁</div>
-                <p className="text-gray-400">No captures or recordings yet</p>
+                <p className="text-gray-400">No captures yet</p>
               </div>
             )}
           </div>
@@ -594,7 +501,7 @@ export default function SendPage() {
               disabled={uploading}
               className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50"
             >
-              {uploading ? '⏳ Uploading...' : '📸 Capture'}
+              {uploading ? '⏳' : '📸 Capture'}
             </button>
             
             {!isRecording ? (
@@ -640,12 +547,12 @@ export default function SendPage() {
                       <span className="text-lg">📥</span>
                       <div>
                         <div className="font-medium">
-                          {receiver.name || `Receiver-${receiver.socketId.slice(0, 8)}`}
+                          {receiver.name || 'Receiver'}
                         </div>
                       </div>
                     </div>
                     <span className="text-xs">
-                      {selectedReceivers.includes(receiver.socketId) ? '✓ Selected' : 'Click to select'}
+                      {selectedReceivers.includes(receiver.socketId) ? '✓ Selected' : 'Click'}
                     </span>
                   </button>
                 ))}
@@ -653,9 +560,7 @@ export default function SendPage() {
                 {receivers.length === 0 && (
                   <div className="text-center py-8">
                     <div className="text-3xl mb-2">📥</div>
-                    <p className="text-gray-400 text-sm">
-                      No receivers online yet
-                    </p>
+                    <p className="text-gray-400 text-sm">No receivers online</p>
                   </div>
                 )}
               </div>

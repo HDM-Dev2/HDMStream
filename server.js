@@ -9,10 +9,13 @@ require('dotenv').config();
 const connectDB = require('./config/db');
 const socketConfig = require('./config/socket');
 const logger = require('./config/logger');
+const errorHandler = require('./middleware/errorHandler');
 
+const authRoutes = require('./routes/authRoutes');
 const cameraRoutes = require('./routes/cameraRoutes');
 const socketRoutes = require('./routes/socketRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
+const captureRoutes = require('./routes/captureRoutes');
 
 const socketController = require('./controllers/socketController');
 
@@ -29,9 +32,11 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use(logger.requestLogger());
 
+app.use('/api/auth', authRoutes);
 app.use('/api/camera', cameraRoutes);
 app.use('/api/socket', socketRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/captures', captureRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -97,9 +102,7 @@ app.get('*', (req, res) => {
   }
 });
 
-app.use((err, req, res, next) => {
-  res.status(500).json({ error: 'Internal server error' });
-});
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {

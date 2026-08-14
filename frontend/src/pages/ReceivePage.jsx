@@ -1,50 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSocket } from '../hooks/useSocket'
+import { useAuth } from '../context/AuthContext'
 import api from '../api/axios'
 
 export default function ReceivePage() {
   const navigate = useNavigate()
-  const { socket, connected, senders, error } = useSocket('receiver')
+  const { user } = useAuth()
+  const { socket, connected, senders, error } = useSocket('receiver', user?.deviceName)
   
   const [streams, setStreams] = useState(new Map())
   const [status, setStatus] = useState('Ready to receive...')
   const [capturedImages, setCapturedImages] = useState([])
   const [showGallery, setShowGallery] = useState(false)
-  const [deviceName, setDeviceName] = useState('')
-  const [showNamePrompt, setShowNamePrompt] = useState(true)
   const [uploading, setUploading] = useState(false)
-  
-  const deviceIdRef = useRef(null)
+
+  const isFarmvexaUser = user?.authProvider === 'farmvexa'
 
   useEffect(() => {
-    deviceIdRef.current = localStorage.getItem('receiverDeviceId') || generateDeviceId()
-    localStorage.setItem('receiverDeviceId', deviceIdRef.current)
-    
-    const savedName = localStorage.getItem('receiverName')
-    if (savedName) {
-      setDeviceName(savedName)
-      setShowNamePrompt(false)
-    }
+    fetchCaptures()
   }, [])
-
-  useEffect(() => {
-    if (!socket) return
-    
-    socket.emit('get-device-name', { deviceId: deviceIdRef.current, type: 'receiver' })
-    
-    socket.on('device-name-found', (data) => {
-      if (data.name) {
-        setDeviceName(data.name)
-        localStorage.setItem('receiverName', data.name)
-        setShowNamePrompt(false)
-      }
-    })
-    
-    return () => {
-      socket.off('device-name-found')
-    }
-  }, [socket])
 
   useEffect(() => {
     if (senders.length > 0) {
@@ -100,18 +75,32 @@ export default function ReceivePage() {
     }
   }, [socket])
 
-  const generateDeviceId = () => {
-    return 'receiver-' + Math.random().toString(36).substring(2, 15)
+  const fetchCaptures = async () => {
+    try {
+      const response = await api.get('/captures')
+      setCapturedImages(response.data.captures.filter(c => c.type === 'photo').map(c => ({
+        id: c.id,
+        type: 'photo',
+        url: c.cloudinaryUrl,
+        cloudinaryPublicId: c.cloudinaryPublicId,
+        timestamp: c.createdAt
+      })))
+    } catch (error) {
+      console.error('Failed to fetch captures:', error)
+    }
   }
 
-  const handleRegister = () => {
-    const name = deviceName.trim() || `Receiver-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
-    setDeviceName(name)
-    localStorage.setItem('receiverName', name)
-    setShowNamePrompt(false)
-    
-    if (socket) {
-      socket.emit('register-device', { deviceId: deviceIdRef.current, name, type: 'receiver' })
+  const refreshSenders = () => {
+    if (socket && socket.connected) {
+      socket.emit('receiver-join', { name: user?.deviceName })
+      setStatus('Refreshing...')
+      setTimeout(() => {
+        if (senders.length > 0) {
+          setStatus(`${senders.length} sender(s) online - Waiting for stream...`)
+        } else {
+          setStatus('Ready to receive...')
+        }
+      }, 1000)
     }
   }
 
@@ -120,7 +109,7 @@ export default function ReceivePage() {
     if (!streamData || !streamData.url) return
     
     setUploading(true)
-    setStatus('Uploading to Cloudinary...')
+    setStatus('Uploading...')
     
     try {
       const blob = await fetch(streamData.url).then(r => r.blob())
@@ -130,17 +119,22 @@ export default function ReceivePage() {
         reader.readAsDataURL(blob)
       })
       
-      const response = await api.post('/upload', { dataUrl })
+      const response = await api.post('/upload', { 
+        dataUrl,
+        receiverName: user?.deviceName,
+        senderName: streamData.senderName
+      })
       
       const capture = {
-        id: response.data.publicId,
+        id: response.data.captureId,
         type: 'photo',
         url: response.data.url,
+        cloudinaryPublicId: response.data.publicId,
         timestamp: new Date().toISOString()
       }
       
       setCapturedImages(prev => [capture, ...prev])
-      setStatus('Photo captured and uploaded!')
+      setStatus('Photo captured!')
     } catch (error) {
       console.error('Upload failed:', error)
       setStatus('Upload failed')
@@ -151,18 +145,16 @@ export default function ReceivePage() {
 
   const deleteCapture = async (capture) => {
     try {
-      await api.delete('/upload', { data: { publicId: capture.id } })
+      await api.delete('/upload', { 
+        data: { 
+          publicId: capture.cloudinaryPublicId,
+          captureId: capture.id
+        } 
+      })
       setCapturedImages(prev => prev.filter(c => c.id !== capture.id))
       setStatus('Photo deleted')
     } catch (error) {
-      console.error('Delete failed:', error)
       setStatus('Delete failed')
-    }
-  }
-
-  const clearAllCaptures = async () => {
-    for (const capture of capturedImages) {
-      await deleteCapture(capture)
     }
   }
 
@@ -181,56 +173,21 @@ export default function ReceivePage() {
       
       URL.revokeObjectURL(blobUrl)
     } catch (error) {
-      console.error('Download failed:', error)
       window.open(capture.url, '_blank')
     }
   }
 
-  if (showNamePrompt) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="bg-gray-800 rounded-xl shadow-2xl p-8 w-full max-w-md">
-          <div className="text-center mb-8">
-            <div className="text-6xl mb-4">📥</div>
-            <h1 className="text-3xl font-bold text-white mb-2">Receiver Setup</h1>
-            <p className="text-gray-400">Enter a device name to identify this receiver</p>
-          </div>
-
-          <div className="space-y-4">
-            <input
-              type="text"
-              value={deviceName}
-              onChange={(e) => setDeviceName(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleRegister()}
-              placeholder={`Receiver-${Math.random().toString(36).substring(2, 6).toUpperCase()}`}
-              className="w-full px-4 py-3 rounded-lg bg-gray-700 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-
-            <button
-              onClick={handleRegister}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition"
-            >
-              Start Receiving
-            </button>
-
-            <button
-              onClick={() => {
-                const autoName = `Receiver-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
-                setDeviceName(autoName)
-                localStorage.setItem('receiverName', autoName)
-                setShowNamePrompt(false)
-                if (socket) {
-                  socket.emit('register-device', { deviceId: deviceIdRef.current, name: autoName, type: 'receiver' })
-                }
-              }}
-              className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 rounded-lg transition"
-            >
-              Auto-generate Name
-            </button>
-          </div>
-        </div>
-      </div>
-    )
+  const sendToFarmVexa = (capture) => {
+    if (window.parent !== window) {
+      window.parent.postMessage({
+        type: 'farmvexa-crop-photo',
+        imageUrl: capture.url,
+        timestamp: new Date().toISOString()
+      }, '*')
+      setStatus('Photo sent to FarmVexa!')
+    } else {
+      setStatus('Open from FarmVexa Crop Scan to send photos')
+    }
   }
 
   return (
@@ -246,12 +203,19 @@ export default function ReceivePage() {
           <h1 className="text-xl font-bold">Receive Mode</h1>
           <div className="flex items-center space-x-2">
             <button
+              onClick={refreshSenders}
+              className="text-sm text-yellow-400 hover:text-yellow-300"
+              title="Refresh senders"
+            >
+              🔄
+            </button>
+            <button
               onClick={() => setShowGallery(!showGallery)}
               className="text-sm text-blue-400 hover:text-blue-300"
             >
               📁 Gallery ({capturedImages.length})
             </button>
-            <span className="text-sm text-gray-300">{deviceName}</span>
+            <span className="text-sm text-gray-300">{user?.deviceName}</span>
             <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
             <span className="text-sm text-gray-300">{senders.length} sender(s)</span>
           </div>
@@ -265,12 +229,8 @@ export default function ReceivePage() {
               <div className="flex flex-col items-center justify-center py-20">
                 <div className="text-6xl mb-4 animate-pulse">📥</div>
                 <p className="text-gray-400 text-lg font-semibold">{status}</p>
-                <p className="text-gray-500 text-sm mt-2">
-                  Waiting for camera streams...
-                </p>
-                <p className="text-gray-500 text-sm mt-1">
-                  Device: {deviceName}
-                </p>
+                <p className="text-gray-500 text-sm mt-2">Waiting for camera streams...</p>
+                <p className="text-gray-500 text-sm mt-1">Device: {user?.deviceName}</p>
                 {error && <p className="text-red-400 text-sm mt-2">{error}</p>}
               </div>
             ) : (
@@ -289,7 +249,7 @@ export default function ReceivePage() {
                     
                     <div className="absolute top-2 left-2 bg-black bg-opacity-50 rounded px-2 py-1">
                       <span className="text-xs text-white">
-                        {streamData.senderName || `Sender ${senderId.slice(0, 8)}`}
+                        {streamData.senderName || 'Sender'}
                       </span>
                     </div>
 
@@ -299,7 +259,7 @@ export default function ReceivePage() {
                         disabled={uploading}
                         className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-sm disabled:opacity-50"
                       >
-                        {uploading ? '⏳ Uploading...' : '📸 Capture'}
+                        {uploading ? '⏳' : '📸 Capture'}
                       </button>
                     </div>
                   </div>
@@ -309,17 +269,7 @@ export default function ReceivePage() {
           </>
         ) : (
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold">Gallery ({capturedImages.length})</h2>
-              {capturedImages.length > 0 && (
-                <button
-                  onClick={clearAllCaptures}
-                  className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm"
-                >
-                  🗑 Clear All
-                </button>
-              )}
-            </div>
+            <h2 className="text-xl font-bold mb-4">Gallery ({capturedImages.length})</h2>
             
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {capturedImages.map(capture => (
@@ -331,6 +281,15 @@ export default function ReceivePage() {
                     loading="lazy"
                   />
                   <div className="absolute bottom-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
+                    {isFarmvexaUser && (
+                      <button
+                        onClick={() => sendToFarmVexa(capture)}
+                        className="bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-xs"
+                        title="Send to FarmVexa"
+                      >
+                        🌾
+                      </button>
+                    )}
                     <button
                       onClick={() => downloadCapture(capture)}
                       className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
