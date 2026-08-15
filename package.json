@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "cd frontend && rmdir /s /q dist && npm run build && cd ../ && nodemon --ignore public/ --ignore frontend/ server.js",
+    "generate-pwa": "node scripts/generate-pwa-assets.js",
     "build": "cd frontend && npm install && npm run build",
     "copy": "rm -rf public && mkdir public && cp -r frontend/dist/* public/",
     "deploy": "npm run build && npm run copy && npm start"
@@ -22,6 +23,7 @@
     "socket.io": "^4.6.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "sharp": "^0.33.5"
   }
 }

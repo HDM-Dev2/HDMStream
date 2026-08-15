@@ -22,10 +22,10 @@ export function useSocket(role, deviceName = '') {
 
   useEffect(() => {
     const token = localStorage.getItem('hdm_token')
+    const socketUrl = window.location.origin
     
-    const newSocket = io({
-      transports: ['polling'],
-      upgrade: false,
+    const newSocket = io(socketUrl, {
+      transports: ['polling', 'websocket'],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 500,

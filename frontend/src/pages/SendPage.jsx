@@ -42,6 +42,7 @@ export default function SendPage() {
   const scanPhotosRef = useRef([])
   const gpsDataRef = useRef(null)
   const toastTimeoutRef = useRef(null)
+  const isFieldScanModeRef = useRef(false)
 
   const isFarmvexaUser = user?.authProvider === 'farmvexa'
 
@@ -72,6 +73,10 @@ export default function SendPage() {
         clearInterval(scanTimerRef.current)
       }
     }
+  }, [isFieldScanMode])
+
+  useEffect(() => {
+    isFieldScanModeRef.current = isFieldScanMode
   }, [isFieldScanMode])
 
   const formatTime = (seconds) => {
@@ -171,7 +176,13 @@ export default function SendPage() {
         const reader = new FileReader()
         reader.onloadend = () => {
           const arrayBuffer = reader.result
-          if (selectedReceivers.length === 1) {
+          
+          if (isFieldScanModeRef.current) {
+            socket.emit('frame-broadcast', {
+              frameData: arrayBuffer,
+              senderName: user?.deviceName
+            })
+          } else if (selectedReceivers.length === 1) {
             socket.emit('frame', {
               frameData: arrayBuffer,
               receiverId: selectedReceivers[0],
@@ -353,6 +364,8 @@ export default function SendPage() {
       const photo = {
         id: response.data.captureId,
         url: response.data.url,
+        cloudinaryUrl: response.data.url,
+        imageUrl: response.data.url,
         cloudinaryPublicId: response.data.publicId,
         lat: currentGps?.lat || null,
         lng: currentGps?.lng || null,
@@ -371,7 +384,7 @@ export default function SendPage() {
         })
       }
       
-      const gpsStatus = currentGps ? `GPS ✓` : 'GPS pending'
+      const gpsStatus = currentGps ? 'GPS ✓' : 'GPS pending'
       setStatus(`📸 Captured ${scanPhotosRef.current.length}/${maxPhotos} - ${gpsStatus}`)
       
       if (scanPhotosRef.current.length >= maxPhotos) {
@@ -400,6 +413,9 @@ export default function SendPage() {
       }
       
       startGps()
+      
+      // Start streaming frames
+      startStreaming()
       
       scanPhotosRef.current = []
       setScanPhotos([])
@@ -436,6 +452,7 @@ export default function SendPage() {
       scanTimerRef.current = null
     }
     
+    stopStreaming()
     stopGps()
     setIsFieldScanMode(false)
     
@@ -654,29 +671,13 @@ export default function SendPage() {
     <div className="min-h-screen flex flex-col">
       <div className="bg-gray-800 p-4">
         <div className="flex items-center justify-between">
-          <button
-            onClick={() => navigate('/')}
-            className="text-gray-400 hover:text-white"
-          >
-            ← Home
-          </button>
+          <button onClick={() => navigate('/')} className="text-gray-400 hover:text-white">← Home</button>
           <h1 className="text-xl font-bold">Send Mode</h1>
           <div className="flex items-center space-x-2">
             {isFarmvexaUser && fieldScanEnabled && !isFieldScanMode && (
-              <button
-                onClick={startFieldScan}
-                className="text-sm text-emerald-400 hover:text-emerald-300"
-                title="Start Field Scan"
-              >
-                🌾 Scan
-              </button>
+              <button onClick={startFieldScan} className="text-sm text-emerald-400 hover:text-emerald-300" title="Start Field Scan">🌾 Scan</button>
             )}
-            <button
-              onClick={() => setShowGallery(!showGallery)}
-              className="text-sm text-blue-400 hover:text-blue-300"
-            >
-              📁 Gallery ({capturedImages.length + scanGroups.length})
-            </button>
+            <button onClick={() => setShowGallery(!showGallery)} className="text-sm text-blue-400 hover:text-blue-300">📁 Gallery ({capturedImages.length + scanGroups.length})</button>
             <span className="text-sm text-gray-300">{user?.deviceName}</span>
             <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
             <span className="text-sm text-gray-300">{receivers.length} online</span>
@@ -692,24 +693,14 @@ export default function SendPage() {
                 <span className="text-emerald-300 text-sm">⏱ {formatTime(scanElapsed)}</span>
                 <span className="text-emerald-400 text-sm">Every {currentScanSettings.captureInterval}s</span>
               </div>
-              <button
-                onClick={stopFieldScan}
-                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-xs font-semibold"
-              >
-                ⏹ Stop
-              </button>
+              <button onClick={stopFieldScan} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-xs font-semibold">⏹ Stop</button>
             </div>
             <div className="mt-2 w-full bg-gray-700 rounded-full h-1.5">
-              <div
-                className="h-1.5 rounded-full bg-emerald-500 transition-all"
-                style={{ width: `${Math.min((scanPhotos.length / currentScanSettings.maxPhotosPerScan) * 100, 100)}%` }}
-              />
+              <div className="h-1.5 rounded-full bg-emerald-500 transition-all" style={{ width: `${Math.min((scanPhotos.length / currentScanSettings.maxPhotosPerScan) * 100, 100)}%` }} />
             </div>
             <div className="flex items-center gap-2 mt-1">
               {gpsData ? (
-                <span className="text-green-400 text-xs">
-                  📍 {gpsData.lat.toFixed(5)}, {gpsData.lng.toFixed(5)} (±{Math.round(gpsData.accuracy)}m)
-                </span>
+                <span className="text-green-400 text-xs">📍 {gpsData.lat.toFixed(5)}, {gpsData.lng.toFixed(5)} (±{Math.round(gpsData.accuracy)}m)</span>
               ) : (
                 <span className="text-yellow-400 text-xs">📍 GPS pending</span>
               )}
@@ -727,24 +718,14 @@ export default function SendPage() {
       <div className="flex-1 relative bg-black">
         {!showGallery ? (
           <>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-contain"
-            />
-            
+            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain" />
             <div className="absolute top-4 left-4 bg-black bg-opacity-50 rounded-lg px-3 py-2">
               <p className="text-white text-sm flex items-center gap-2">
-                {isStreaming && (
-                  <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                )}
+                {isStreaming && <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}
                 {status}
               </p>
               {error && <p className="text-red-400 text-xs mt-1">{error}</p>}
             </div>
-
             <div className="absolute bottom-2 left-2 flex items-end">
               <span className="text-xs font-bold" style={{ color: 'rgba(16, 185, 129, 0.8)' }}>HDM</span>
               <span className="text-[8px] font-bold mb-1" style={{ color: 'rgba(59, 130, 246, 0.8)' }}>HD</span>
@@ -753,19 +734,9 @@ export default function SendPage() {
         ) : (
           <div className="p-4">
             <div className="flex space-x-4 mb-4">
-              <button
-                onClick={() => setGalleryTab('photos')}
-                className={`px-4 py-2 rounded-lg ${galleryTab === 'photos' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
-              >
-                📸 Photos ({capturedImages.length})
-              </button>
+              <button onClick={() => setGalleryTab('photos')} className={`px-4 py-2 rounded-lg ${galleryTab === 'photos' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}>📸 Photos ({capturedImages.length})</button>
               {isFarmvexaUser && (
-                <button
-                  onClick={() => setGalleryTab('scans')}
-                  className={`px-4 py-2 rounded-lg ${galleryTab === 'scans' ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300'}`}
-                >
-                  🌾 Scans ({scanGroups.length})
-                </button>
+                <button onClick={() => setGalleryTab('scans')} className={`px-4 py-2 rounded-lg ${galleryTab === 'scans' ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300'}`}>🌾 Scans ({scanGroups.length})</button>
               )}
             </div>
 
@@ -773,25 +744,10 @@ export default function SendPage() {
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 {capturedImages.map(capture => (
                   <div key={capture.id} className="relative group">
-                    <img 
-                      src={capture.url} 
-                      alt="Capture" 
-                      className="w-full rounded-lg"
-                      loading="lazy"
-                    />
+                    <img src={capture.url} alt="Capture" className="w-full rounded-lg" loading="lazy" />
                     <div className="absolute bottom-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition">
-                      <button
-                        onClick={() => downloadCapture(capture)}
-                        className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
-                      >
-                        ⬇
-                      </button>
-                      <button
-                        onClick={() => deleteCapture(capture)}
-                        className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
-                      >
-                        🗑
-                      </button>
+                      <button onClick={() => downloadCapture(capture)} className="bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs">⬇</button>
+                      <button onClick={() => deleteCapture(capture)} className="bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs">🗑</button>
                     </div>
                   </div>
                 ))}
@@ -808,60 +764,23 @@ export default function SendPage() {
                   <div key={scan.id} className="bg-gray-800 rounded-lg p-4">
                     <div className="flex items-center justify-between mb-3">
                       <div>
-                        <h3 className="text-white font-bold">
-                          Scan - {new Date(scan.createdAt).toLocaleString()}
-                        </h3>
-                        <p className="text-gray-400 text-sm">
-                          {scan.totalPhotos} photos | {scan.duration}s | {scan.sentToFarmvexa ? '✓ Sent' : '✗ Not Sent'}
-                        </p>
+                        <h3 className="text-white font-bold">Scan - {new Date(scan.createdAt).toLocaleString()}</h3>
+                        <p className="text-gray-400 text-sm">{scan.totalPhotos} photos | {scan.duration}s | {scan.sentToFarmvexa ? '✓ Sent' : '✗ Not Sent'}</p>
                       </div>
                       <div className="flex space-x-3">
-                        <button
-                          onClick={() => markAllPhotos(scan.id)}
-                          className="text-yellow-400 hover:text-yellow-300 text-xs"
-                        >
-                          ☑ Mark All
-                        </button>
-                        <button
-                          onClick={() => bulkDeleteMarked(scan.id)}
-                          className="text-orange-400 hover:text-orange-300 text-xs"
-                        >
-                          🗑 Bulk Delete
-                        </button>
-                        <button
-                          onClick={() => deleteScanGroup(scan.id)}
-                          className="text-red-400 hover:text-red-300 text-xs"
-                        >
-                          🗑 Delete All
-                        </button>
-                        <button
-                          onClick={() => resendToFarmvexa(scan)}
-                          className="text-green-400 hover:text-green-300 text-xs"
-                        >
-                          🌾 Resend
-                        </button>
+                        <button onClick={() => markAllPhotos(scan.id)} className="text-yellow-400 hover:text-yellow-300 text-xs">☑ Mark All</button>
+                        <button onClick={() => bulkDeleteMarked(scan.id)} className="text-orange-400 hover:text-orange-300 text-xs">🗑 Bulk Delete</button>
+                        <button onClick={() => deleteScanGroup(scan.id)} className="text-red-400 hover:text-red-300 text-xs">🗑 Delete All</button>
+                        <button onClick={() => resendToFarmvexa(scan)} className="text-green-400 hover:text-green-300 text-xs">🌾 Resend</button>
                       </div>
                     </div>
-                    
                     <div className="grid grid-cols-4 md:grid-cols-6 gap-2">
                       {scan.photos.map(photo => (
                         <div key={photo._id} className="relative group">
                           <img src={photo.cloudinaryUrl} className="w-full h-20 object-cover rounded" />
-                          {photo.marked && (
-                            <div className="absolute top-1 right-1 text-yellow-400 text-xs">⭐</div>
-                          )}
-                          <button
-                            onClick={() => toggleMarkPhoto(scan.id, photo._id)}
-                            className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 text-yellow-400 text-xs"
-                          >
-                            {photo.marked ? '⭐' : '☆'}
-                          </button>
-                          <button
-                            onClick={() => deletePhoto(scan.id, photo._id)}
-                            className="absolute bottom-1 left-1 opacity-0 group-hover:opacity-100 text-red-400 text-xs"
-                          >
-                            🗑
-                          </button>
+                          {photo.marked && <div className="absolute top-1 right-1 text-yellow-400 text-xs">⭐</div>}
+                          <button onClick={() => toggleMarkPhoto(scan.id, photo._id)} className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 text-yellow-400 text-xs">{photo.marked ? '⭐' : '☆'}</button>
+                          <button onClick={() => deletePhoto(scan.id, photo._id)} className="absolute bottom-1 left-1 opacity-0 group-hover:opacity-100 text-red-400 text-xs">🗑</button>
                         </div>
                       ))}
                     </div>
@@ -882,88 +801,30 @@ export default function SendPage() {
       {!showGallery && !isFieldScanMode && (
         <div className="bg-gray-800 p-4">
           <div className="grid grid-cols-3 gap-3 mb-4">
-            <button
-              onClick={switchCamera}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold"
-            >
-              🔄 Switch
-            </button>
-            
-            <button
-              onClick={() => setShowReceiverList(!showReceiverList)}
-              className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold"
-            >
-              📥 Receivers ({receivers.length})
-            </button>
-            
-            <button
-              onClick={sendToSelected}
-              disabled={selectedReceivers.length === 0}
-              className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              📤 Send ({selectedReceivers.length})
-            </button>
+            <button onClick={switchCamera} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold">🔄 Switch</button>
+            <button onClick={() => setShowReceiverList(!showReceiverList)} className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold">📥 Receivers ({receivers.length})</button>
+            <button onClick={sendToSelected} disabled={selectedReceivers.length === 0} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed">📤 Send ({selectedReceivers.length})</button>
           </div>
-
           <div className="grid grid-cols-3 gap-3">
-            <button
-              onClick={capturePhoto}
-              disabled={uploading}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50"
-            >
-              {uploading ? '⏳' : '📸 Capture'}
-            </button>
-            
+            <button onClick={capturePhoto} disabled={uploading} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-50">{uploading ? '⏳' : '📸 Capture'}</button>
             {!isRecording ? (
-              <button
-                onClick={startRecording}
-                className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold"
-              >
-                ⏺ Record
-              </button>
+              <button onClick={startRecording} className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold">⏺ Record</button>
             ) : (
-              <button
-                onClick={stopRecording}
-                className="bg-gray-600 hover:bg-gray-700 text-white px-6 py-3 rounded-lg font-semibold"
-              >
-                ⏹ Stop Rec
-              </button>
+              <button onClick={stopRecording} className="bg-gray-600 hover:bg-gray-700 text-white px-6 py-3 rounded-lg font-semibold">⏹ Stop Rec</button>
             )}
-            
-            <button
-              onClick={stopCamera}
-              className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold"
-            >
-              ⏹ Stop
-            </button>
+            <button onClick={stopCamera} className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-semibold">⏹ Stop</button>
           </div>
-
           {showReceiverList && (
             <div className="bg-gray-700 rounded-lg p-4 mt-4">
               <h3 className="text-white font-bold mb-3">Select Receivers</h3>
-              
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {receivers.map(receiver => (
-                  <button
-                    key={receiver.socketId}
-                    onClick={() => toggleReceiver(receiver.socketId)}
-                    className={`w-full flex items-center justify-between px-4 py-3 rounded-lg transition ${
-                      selectedReceivers.includes(receiver.socketId)
-                        ? 'bg-green-600 text-white'
-                        : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-                    }`}
-                  >
+                  <button key={receiver.socketId} onClick={() => toggleReceiver(receiver.socketId)} className={`w-full flex items-center justify-between px-4 py-3 rounded-lg transition ${selectedReceivers.includes(receiver.socketId) ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300 hover:bg-gray-500'}`}>
                     <div className="flex items-center space-x-3">
                       <span className="text-lg">📥</span>
-                      <div>
-                        <div className="font-medium">
-                          {receiver.name || 'Receiver'}
-                        </div>
-                      </div>
+                      <div className="font-medium">{receiver.name || 'Receiver'}</div>
                     </div>
-                    <span className="text-xs">
-                      {selectedReceivers.includes(receiver.socketId) ? '✓ Selected' : 'Click'}
-                    </span>
+                    <span className="text-xs">{selectedReceivers.includes(receiver.socketId) ? '✓ Selected' : 'Click'}</span>
                   </button>
                 ))}
               </div>
