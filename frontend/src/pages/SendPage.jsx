@@ -25,10 +25,10 @@ export default function SendPage() {
   const [isFieldScanMode, setIsFieldScanMode] = useState(false)
   const [scanPhotos, setScanPhotos] = useState([])
   const [gpsData, setGpsData] = useState(null)
-  const [sendingToFarmVexa, setSendingToFarmVexa] = useState(false)
   const [scanElapsed, setScanElapsed] = useState(0)
   const [currentScanSettings, setCurrentScanSettings] = useState(null)
   const [fieldScanEnabled, setFieldScanEnabled] = useState(false)
+  const [toast, setToast] = useState('')
   
   const localStream = useRef(null)
   const videoRef = useRef(null)
@@ -40,8 +40,8 @@ export default function SendPage() {
   const scanStartTimeRef = useRef(null)
   const scanTimerRef = useRef(null)
   const scanPhotosRef = useRef([])
-  const isCapturingRef = useRef(false)
   const gpsDataRef = useRef(null)
+  const toastTimeoutRef = useRef(null)
 
   const isFarmvexaUser = user?.authProvider === 'farmvexa'
 
@@ -78,6 +78,16 @@ export default function SendPage() {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const showToast = (message) => {
+    setToast(message)
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current)
+    }
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast('')
+    }, 5000)
   }
 
   const fetchFieldScanStatus = async () => {
@@ -314,8 +324,6 @@ export default function SendPage() {
   }
 
   const capturePhotoForScan = async (maxPhotos = 100) => {
-    if (isCapturingRef.current) return
-    
     const video = videoRef.current
     if (!video || !video.videoWidth) return
     
@@ -323,8 +331,6 @@ export default function SendPage() {
       stopFieldScan()
       return
     }
-    
-    isCapturingRef.current = true
     
     try {
       const canvas = document.createElement('canvas')
@@ -350,6 +356,7 @@ export default function SendPage() {
         cloudinaryPublicId: response.data.publicId,
         lat: currentGps?.lat || null,
         lng: currentGps?.lng || null,
+        accuracy: currentGps?.accuracy || null,
         timestamp: new Date().toISOString()
       }
       
@@ -359,11 +366,12 @@ export default function SendPage() {
       if (socket) {
         socket.emit('scan-photo-captured', {
           count: scanPhotosRef.current.length,
-          total: maxPhotos
+          total: maxPhotos,
+          photo: photo
         })
       }
       
-      const gpsStatus = currentGps ? `GPS ✓ (±${Math.round(currentGps.accuracy)}m)` : 'GPS pending'
+      const gpsStatus = currentGps ? `GPS ✓` : 'GPS pending'
       setStatus(`📸 Captured ${scanPhotosRef.current.length}/${maxPhotos} - ${gpsStatus}`)
       
       if (scanPhotosRef.current.length >= maxPhotos) {
@@ -372,8 +380,6 @@ export default function SendPage() {
     } catch (error) {
       console.error('Scan capture failed:', error)
       setStatus('Capture failed')
-    } finally {
-      isCapturingRef.current = false
     }
   }
 
@@ -401,7 +407,9 @@ export default function SendPage() {
       setScanElapsed(0)
       setIsFieldScanMode(true)
       
-      if (socket) socket.emit('scan-started')
+      if (socket) {
+        socket.emit('scan-started', { settings: settings })
+      }
       
       const intervalMs = (settings.captureInterval || 5) * 1000
       const maxPhotos = settings.maxPhotosPerScan || 100
@@ -433,19 +441,25 @@ export default function SendPage() {
     
     if (scanPhotosRef.current.length > 0) {
       if (socket) {
-        socket.emit('scan-stopped', { totalPhotos: scanPhotosRef.current.length })
+        socket.emit('scan-stopped', {
+          totalPhotos: scanPhotosRef.current.length,
+          photos: scanPhotosRef.current,
+          settings: currentScanSettings,
+          duration: Math.floor((Date.now() - scanStartTimeRef.current) / 1000)
+        })
       }
       
-      const sentToFarmvexa = window.parent !== window
+      saveScanGroup()
       
-      saveScanGroup(sentToFarmvexa)
-      sendBatchToFarmVexa(sentToFarmvexa)
+      showToast(`✅ Scan saved - ${scanPhotosRef.current.length} photos and auto sent to FarmVexa`)
+      
+      setStatus('Scan complete')
     } else {
       setStatus('No photos captured')
     }
   }
 
-  const saveScanGroup = async (sentToFarmvexa) => {
+  const saveScanGroup = async () => {
     try {
       const duration = Math.floor((Date.now() - scanStartTimeRef.current) / 1000)
       
@@ -453,7 +467,7 @@ export default function SendPage() {
         photos: scanPhotosRef.current,
         totalPhotos: scanPhotosRef.current.length,
         duration: duration,
-        sentToFarmvexa: sentToFarmvexa,
+        sentToFarmvexa: true,
         startedAt: new Date(scanStartTimeRef.current).toISOString(),
         endedAt: new Date().toISOString()
       })
@@ -461,24 +475,6 @@ export default function SendPage() {
     } catch (error) {
       console.error('Failed to save scan:', error)
     }
-  }
-
-  const sendBatchToFarmVexa = (sentToFarmvexa) => {
-    setSendingToFarmVexa(true)
-    
-    if (sentToFarmvexa) {
-      window.parent.postMessage({
-        type: 'farmvexa-field-scan-batch',
-        photos: scanPhotosRef.current,
-        totalPhotos: scanPhotosRef.current.length,
-        timestamp: new Date().toISOString()
-      }, '*')
-      setStatus(`✅ Sent ${scanPhotosRef.current.length} photos to FarmVexa`)
-    } else {
-      setStatus('Scan saved. Open from FarmVexa to send.')
-    }
-    
-    setSendingToFarmVexa(false)
   }
 
   const startRecording = () => {
@@ -619,9 +615,9 @@ export default function SendPage() {
         totalPhotos: scan.photos.length,
         timestamp: new Date().toISOString()
       }, '*')
-      setStatus(`✅ Resent ${scan.photos.length} photos to FarmVexa`)
+      showToast(`✅ Resent ${scan.photos.length} photos to FarmVexa!`)
     } else {
-      setStatus('Open from FarmVexa to resend')
+      showToast('Open from FarmVexa to resend')
     }
   }
 
@@ -643,6 +639,9 @@ export default function SendPage() {
       }
       if (scanTimerRef.current) {
         clearInterval(scanTimerRef.current)
+      }
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current)
       }
       stopGps()
       if (localStream.current) {
@@ -695,10 +694,9 @@ export default function SendPage() {
               </div>
               <button
                 onClick={stopFieldScan}
-                disabled={sendingToFarmVexa}
-                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-xs font-semibold disabled:opacity-50"
+                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-xs font-semibold"
               >
-                {sendingToFarmVexa ? 'Sending...' : '⏹ Stop'}
+                ⏹ Stop
               </button>
             </div>
             <div className="mt-2 w-full bg-gray-700 rounded-full h-1.5">
@@ -719,6 +717,12 @@ export default function SendPage() {
           </div>
         )}
       </div>
+
+      {toast && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 bg-gray-800 border border-gray-700 rounded-lg px-6 py-3 shadow-xl">
+          <p className="text-white text-sm">{toast}</p>
+        </div>
+      )}
 
       <div className="flex-1 relative bg-black">
         {!showGallery ? (

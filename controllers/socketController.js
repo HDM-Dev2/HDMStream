@@ -35,7 +35,6 @@ module.exports = (io) => {
     socket.on('sender-join', async (data = {}) => {
       try {
         const { deviceId = socket.id, name } = data;
-        
         const user = await User.findById(socket.userId);
         
         socket.role = 'sender';
@@ -85,7 +84,6 @@ module.exports = (io) => {
     socket.on('receiver-join', async (data = {}) => {
       try {
         const { deviceId = socket.id, name } = data;
-        
         const user = await User.findById(socket.userId);
         
         socket.role = 'receiver';
@@ -159,12 +157,13 @@ module.exports = (io) => {
       });
     });
 
-    socket.on('scan-started', () => {
+    socket.on('scan-started', (data) => {
       activeReceivers.forEach((receiver, receiverSocketId) => {
         if (receiver.userId === socket.userId) {
           io.to(receiverSocketId).emit('scan-started', {
             senderId: socket.id,
-            senderName: socket.name
+            senderName: socket.name,
+            settings: data.settings
           });
         }
       });
@@ -176,7 +175,8 @@ module.exports = (io) => {
           io.to(receiverSocketId).emit('scan-photo-captured', {
             senderId: socket.id,
             count: data.count,
-            total: data.total
+            total: data.total,
+            photo: data.photo
           });
         }
       });
@@ -187,7 +187,10 @@ module.exports = (io) => {
         if (receiver.userId === socket.userId) {
           io.to(receiverSocketId).emit('scan-stopped', {
             senderId: socket.id,
-            totalPhotos: data.totalPhotos
+            totalPhotos: data.totalPhotos,
+            photos: data.photos,
+            settings: data.settings,
+            duration: data.duration
           });
         }
       });

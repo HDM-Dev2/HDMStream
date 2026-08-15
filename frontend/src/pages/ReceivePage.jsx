@@ -6,28 +6,33 @@ import api from '../api/axios'
 
 export default function ReceivePage() {
   const navigate = useNavigate()
-  const { user, fieldScanSettings } = useAuth()
+  const { user } = useAuth()
   const { socket, connected, senders, error } = useSocket('receiver', user?.deviceName)
   
   const [streams, setStreams] = useState(new Map())
   const [status, setStatus] = useState('Ready to receive...')
   const [capturedImages, setCapturedImages] = useState([])
-  const [recordings, setRecordings] = useState([])
   const [scanGroups, setScanGroups] = useState([])
   const [showGallery, setShowGallery] = useState(false)
   const [galleryTab, setGalleryTab] = useState('photos')
   const [uploading, setUploading] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
   
   const [isScanMode, setIsScanMode] = useState(false)
   const [scanPhotoCount, setScanPhotoCount] = useState(0)
+  const [scanTotal, setScanTotal] = useState(0)
   const [scanStartTime, setScanStartTime] = useState(null)
   const [scanElapsed, setScanElapsed] = useState(0)
+  const [scanSettings, setScanSettings] = useState(null)
+  const [scanPhotosData, setScanPhotosData] = useState([])
+  const [scanGpsData, setScanGpsData] = useState(null)
   
-  const mediaRecorder = useRef(null)
-  const recordedChunks = useRef([])
+  const [sendingToFarmVexa, setSendingToFarmVexa] = useState(false)
+  const [sendProgress, setSendProgress] = useState(0)
+  const [toast, setToast] = useState('')
+  
   const currentStreamRef = useRef(null)
   const scanTimerRef = useRef(null)
+  const toastTimeoutRef = useRef(null)
 
   const isFarmvexaUser = user?.authProvider === 'farmvexa'
 
@@ -79,24 +84,51 @@ export default function ReceivePage() {
       setStatus('Receiving stream...')
     })
 
-    socket.on('scan-started', () => {
+    socket.on('scan-started', (data) => {
+      console.log('Scan started received:', data)
       setIsScanMode(true)
       setScanPhotoCount(0)
+      setScanTotal(data.settings?.maxPhotosPerScan || 10)
       setScanStartTime(Date.now())
+      setScanSettings(data.settings)
+      setScanPhotosData([])
+      setScanGpsData(null)
       setStatus('Field scan started')
     })
 
     socket.on('scan-photo-captured', (data) => {
+      console.log('Scan photo captured:', data)
       setScanPhotoCount(data.count)
-      setStatus(`📸 Captured ${data.count} photos`)
+      setScanTotal(data.total)
+      if (data.photo) {
+        setScanPhotosData(prev => [...prev, data.photo])
+        if (data.photo.lat && data.photo.lng) {
+          setScanGpsData({
+            lat: data.photo.lat,
+            lng: data.photo.lng,
+            accuracy: data.photo.accuracy || 0
+          })
+        }
+      }
+      setStatus(`📸 ${data.count}/${data.total} photos`)
     })
 
     socket.on('scan-stopped', (data) => {
+      console.log('Scan stopped received:', data)
       setIsScanMode(false)
       setScanStartTime(null)
       setScanElapsed(0)
+      setScanPhotoCount(data.totalPhotos)
+      setScanTotal(data.totalPhotos)
+      setScanPhotosData(data.photos || [])
+      setScanGpsData(null)
       setStatus(`✅ Scan complete - ${data.totalPhotos} photos`)
+      
       fetchScans()
+      
+      if (data.photos && data.photos.length > 0) {
+        sendScanToFarmVexa(data.photos)
+      }
     })
 
     socket.on('sender-available', () => {
@@ -125,6 +157,44 @@ export default function ReceivePage() {
       socket.off('sender-disconnected')
     }
   }, [socket])
+
+  const sendScanToFarmVexa = async (photos) => {
+    setSendingToFarmVexa(true)
+    setSendProgress(0)
+    
+    if (window.parent !== window) {
+      const total = photos.length
+      
+      for (let i = 0; i < total; i++) {
+        setSendProgress(Math.round(((i + 1) / total) * 100))
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      
+      window.parent.postMessage({
+        type: 'farmvexa-field-scan-batch',
+        photos: photos,
+        totalPhotos: total,
+        timestamp: new Date().toISOString()
+      }, '*')
+      
+      showToast(`✅ Sent ${total} photos to FarmVexa!`)
+    } else {
+      showToast('Open from FarmVexa to send scan')
+    }
+    
+    setSendingToFarmVexa(false)
+    setSendProgress(0)
+  }
+
+  const showToast = (message) => {
+    setToast(message)
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current)
+    }
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast('')
+    }, 5000)
+  }
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60)
@@ -246,9 +316,9 @@ export default function ReceivePage() {
         imageUrl: capture.url,
         timestamp: new Date().toISOString()
       }, '*')
-      setStatus('Photo sent to FarmVexa!')
+      showToast('✅ Photo sent to FarmVexa!')
     } else {
-      setStatus('Open from FarmVexa Crop Scan to send photos')
+      showToast('Open from FarmVexa to send photos')
     }
   }
 
@@ -305,9 +375,9 @@ export default function ReceivePage() {
         totalPhotos: scan.photos.length,
         timestamp: new Date().toISOString()
       }, '*')
-      setStatus(`✅ Resent ${scan.photos.length} photos to FarmVexa`)
+      showToast(`✅ Resent ${scan.photos.length} photos to FarmVexa!`)
     } else {
-      setStatus('Open from FarmVexa to resend')
+      showToast('Open from FarmVexa to resend')
     }
   }
 
@@ -356,11 +426,53 @@ export default function ReceivePage() {
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
               <span className="text-emerald-400 font-bold">🌾 Field Scan</span>
-              <span className="text-white">📸 {scanPhotoCount} photos</span>
+              <span className="text-white">📸 {scanPhotoCount}/{scanTotal || '?'}</span>
               <span className="text-emerald-300">⏱ {formatTime(scanElapsed)}</span>
+              {scanSettings && (
+                <>
+                  <span className="text-emerald-400 text-xs">Every {scanSettings.captureInterval}s</span>
+                  <span className="text-emerald-400 text-xs">Max {scanSettings.maxPhotosPerScan}</span>
+                </>
+              )}
             </div>
             <span className="text-emerald-400 text-sm animate-pulse">● Scanning...</span>
           </div>
+          <div className="mt-2 w-full bg-gray-700 rounded-full h-1.5">
+            <div
+              className="h-1.5 rounded-full bg-emerald-500 transition-all"
+              style={{ width: `${scanTotal > 0 ? (scanPhotoCount / scanTotal) * 100 : 0}%` }}
+            />
+          </div>
+          <div className="mt-1">
+            {scanGpsData ? (
+              <span className="text-green-400 text-xs">
+                📍 {scanGpsData.lat.toFixed(5)}, {scanGpsData.lng.toFixed(5)} (±{Math.round(scanGpsData.accuracy)}m)
+              </span>
+            ) : (
+              <span className="text-yellow-400 text-xs">📍 GPS pending</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {sendingToFarmVexa && (
+        <div className="bg-blue-900/50 border-b border-blue-700 px-4 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-blue-400 font-bold">📤 Sending to FarmVexa...</span>
+            <span className="text-white text-sm">{sendProgress}%</span>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-2">
+            <div
+              className="h-2 rounded-full bg-blue-500 transition-all"
+              style={{ width: `${sendProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 bg-gray-800 border border-gray-700 rounded-lg px-6 py-3 shadow-xl">
+          <p className="text-white text-sm">{toast}</p>
         </div>
       )}
 
