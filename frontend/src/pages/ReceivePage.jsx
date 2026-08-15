@@ -85,7 +85,6 @@ export default function ReceivePage() {
     })
 
     socket.on('scan-started', (data) => {
-      console.log('Scan started received:', data)
       setIsScanMode(true)
       setScanPhotoCount(0)
       setScanTotal(data.settings?.maxPhotosPerScan || 10)
@@ -97,7 +96,6 @@ export default function ReceivePage() {
     })
 
     socket.on('scan-photo-captured', (data) => {
-      console.log('Scan photo captured:', data)
       setScanPhotoCount(data.count)
       setScanTotal(data.total)
       if (data.photo) {
@@ -114,7 +112,6 @@ export default function ReceivePage() {
     })
 
     socket.on('scan-stopped', (data) => {
-      console.log('Scan stopped received:', data)
       setIsScanMode(false)
       setScanStartTime(null)
       setScanElapsed(0)
@@ -165,6 +162,13 @@ export default function ReceivePage() {
     if (window.parent !== window) {
       const total = photos.length
       
+      const normalizedPhotos = photos.map((photo) => ({
+        imageUrl: photo.cloudinaryUrl || photo.url || photo.imageUrl,
+        lat: photo.lat || photo.gps?.lat || null,
+        lng: photo.lng || photo.gps?.lng || null,
+        timestamp: photo.timestamp || photo.createdAt || new Date().toISOString()
+      }))
+      
       for (let i = 0; i < total; i++) {
         setSendProgress(Math.round(((i + 1) / total) * 100))
         await new Promise(resolve => setTimeout(resolve, 100))
@@ -172,7 +176,7 @@ export default function ReceivePage() {
       
       window.parent.postMessage({
         type: 'farmvexa-field-scan-batch',
-        photos: photos,
+        photos: normalizedPhotos,
         totalPhotos: total,
         timestamp: new Date().toISOString()
       }, '*')
@@ -369,13 +373,21 @@ export default function ReceivePage() {
 
   const resendToFarmvexa = (scan) => {
     if (window.parent !== window) {
+      const normalizedPhotos = scan.photos.map((photo) => ({
+        imageUrl: photo.cloudinaryUrl || photo.url || photo.imageUrl,
+        lat: photo.lat || photo.gps?.lat || null,
+        lng: photo.lng || photo.gps?.lng || null,
+        timestamp: photo.timestamp || photo.createdAt || new Date().toISOString()
+      }))
+      
       window.parent.postMessage({
         type: 'farmvexa-field-scan-batch',
-        photos: scan.photos,
-        totalPhotos: scan.photos.length,
+        photos: normalizedPhotos,
+        totalPhotos: normalizedPhotos.length,
         timestamp: new Date().toISOString()
       }, '*')
-      showToast(`✅ Resent ${scan.photos.length} photos to FarmVexa!`)
+      
+      showToast(`✅ Resent ${normalizedPhotos.length} photos to FarmVexa!`)
     } else {
       showToast('Open from FarmVexa to resend')
     }
