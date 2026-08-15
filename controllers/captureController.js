@@ -15,6 +15,8 @@ exports.getCaptures = async (req, res) => {
         cloudinaryPublicId: c.cloudinaryPublicId,
         senderName: c.senderName,
         receiverName: c.receiverName,
+        scanMode: c.scanMode || false,
+        gps: c.gps,
         createdAt: c.createdAt
       }))
     });
@@ -25,7 +27,7 @@ exports.getCaptures = async (req, res) => {
 
 exports.saveCapture = async (req, res) => {
   try {
-    const { cloudinaryUrl, cloudinaryPublicId, type, senderName, receiverName } = req.body;
+    const { cloudinaryUrl, cloudinaryPublicId, type, senderName, receiverName, gps, scanMode } = req.body;
     
     if (!cloudinaryUrl || !cloudinaryPublicId) {
       return res.status(400).json({ error: 'Cloudinary data required' });
@@ -37,7 +39,9 @@ exports.saveCapture = async (req, res) => {
       cloudinaryPublicId,
       type: type || 'photo',
       senderName,
-      receiverName
+      receiverName,
+      gps,
+      scanMode: scanMode || false
     });
     
     res.status(201).json({
@@ -47,6 +51,7 @@ exports.saveCapture = async (req, res) => {
         cloudinaryUrl: capture.cloudinaryUrl,
         cloudinaryPublicId: capture.cloudinaryPublicId,
         type: capture.type,
+        scanMode: capture.scanMode,
         createdAt: capture.createdAt
       }
     });

@@ -54,23 +54,7 @@ module.exports = (io) => {
         
         await Device.findOneAndUpdate(
           { deviceId, userId: socket.userId, type: 'sender' },
-          { 
-            name: socket.name,
-            lastSeen: new Date(),
-            userId: socket.userId
-          },
-          { upsert: true, new: true }
-        );
-        
-        await Camera.findOneAndUpdate(
-          { deviceId },
-          { 
-            status: 'online',
-            socketId: socket.id,
-            name: socket.name,
-            userId: socket.userId,
-            lastActive: new Date()
-          },
+          { name: socket.name, lastSeen: new Date(), userId: socket.userId },
           { upsert: true, new: true }
         );
         
@@ -120,11 +104,7 @@ module.exports = (io) => {
         
         await Device.findOneAndUpdate(
           { deviceId, userId: socket.userId, type: 'receiver' },
-          { 
-            name: socket.name,
-            lastSeen: new Date(),
-            userId: socket.userId
-          },
+          { name: socket.name, lastSeen: new Date(), userId: socket.userId },
           { upsert: true, new: true }
         );
         
@@ -152,39 +132,9 @@ module.exports = (io) => {
       }
     });
 
-    socket.on('get-device-name', async (data) => {
-      try {
-        const { deviceId, type } = data;
-        const device = await Device.findOne({ 
-          deviceId, 
-          userId: socket.userId, 
-          type 
-        });
-        socket.emit('device-name-found', device ? { name: device.name } : { name: null });
-      } catch (error) {
-        socket.emit('device-name-found', { name: null });
-      }
-    });
-
-    socket.on('register-device', async (data) => {
-      try {
-        const { deviceId, name, type } = data;
-        await Device.findOneAndUpdate(
-          { deviceId, userId: socket.userId, type },
-          { name, lastSeen: new Date(), userId: socket.userId },
-          { upsert: true, new: true }
-        );
-        socket.emit('device-registered', { success: true, name });
-      } catch (error) {
-        socket.emit('device-registered', { success: false });
-      }
-    });
-
     socket.on('frame', (data) => {
       const { frameData, receiverId, senderName } = data;
-      
       const receiver = activeReceivers.get(receiverId);
-      
       if (receiver && receiver.userId === socket.userId) {
         io.to(receiverId).emit('frame', {
           frameData,
@@ -197,7 +147,6 @@ module.exports = (io) => {
 
     socket.on('frame-broadcast', (data) => {
       const { frameData, senderName } = data;
-      
       activeReceivers.forEach((receiver, receiverSocketId) => {
         if (receiver.userId === socket.userId) {
           io.to(receiverSocketId).emit('frame', {
@@ -210,25 +159,51 @@ module.exports = (io) => {
       });
     });
 
+    socket.on('scan-started', () => {
+      activeReceivers.forEach((receiver, receiverSocketId) => {
+        if (receiver.userId === socket.userId) {
+          io.to(receiverSocketId).emit('scan-started', {
+            senderId: socket.id,
+            senderName: socket.name
+          });
+        }
+      });
+    });
+
+    socket.on('scan-photo-captured', (data) => {
+      activeReceivers.forEach((receiver, receiverSocketId) => {
+        if (receiver.userId === socket.userId) {
+          io.to(receiverSocketId).emit('scan-photo-captured', {
+            senderId: socket.id,
+            count: data.count,
+            total: data.total
+          });
+        }
+      });
+    });
+
+    socket.on('scan-stopped', (data) => {
+      activeReceivers.forEach((receiver, receiverSocketId) => {
+        if (receiver.userId === socket.userId) {
+          io.to(receiverSocketId).emit('scan-stopped', {
+            senderId: socket.id,
+            totalPhotos: data.totalPhotos
+          });
+        }
+      });
+    });
+
     socket.on('sender-stop', async () => {
       if (socket.role === 'sender') {
         activeSenders.delete(socket.id);
-        
         if (socket.deviceId) {
-          await Device.findOneAndUpdate(
-            { deviceId: socket.deviceId, userId: socket.userId, type: 'sender' },
-            { lastSeen: new Date() }
-          );
-          
           await Camera.findOneAndUpdate(
             { deviceId: socket.deviceId },
             { status: 'offline', socketId: null, lastActive: new Date() }
           );
         }
-        
         io.emit('senders-update', Array.from(activeSenders.values()).map(s => ({
           socketId: s.socketId,
-          deviceId: s.deviceId,
           name: s.name,
           userId: s.userId
         })));
@@ -239,28 +214,17 @@ module.exports = (io) => {
     socket.on('disconnect', async () => {
       if (socket.role === 'sender') {
         activeSenders.delete(socket.id);
-        
-        if (socket.deviceId) {
-          await Camera.findOneAndUpdate(
-            { deviceId: socket.deviceId },
-            { status: 'offline', socketId: null, lastActive: new Date() }
-          );
-        }
-        
         io.emit('senders-update', Array.from(activeSenders.values()).map(s => ({
           socketId: s.socketId,
-          deviceId: s.deviceId,
           name: s.name,
           userId: s.userId
         })));
         io.emit('sender-disconnected', socket.id);
       }
-      
       if (socket.role === 'receiver') {
         activeReceivers.delete(socket.id);
         io.emit('receivers-update', Array.from(activeReceivers.values()).map(r => ({
           socketId: r.socketId,
-          deviceId: r.deviceId,
           name: r.name,
           userId: r.userId
         })));

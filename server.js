@@ -16,6 +16,8 @@ const cameraRoutes = require('./routes/cameraRoutes');
 const socketRoutes = require('./routes/socketRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const captureRoutes = require('./routes/captureRoutes');
+const scanRoutes = require('./routes/scanRoutes');
+const fieldScanRoutes = require('./routes/fieldScanRoutes');
 
 const socketController = require('./controllers/socketController');
 
@@ -37,6 +39,8 @@ app.use('/api/camera', cameraRoutes);
 app.use('/api/socket', socketRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/captures', captureRoutes);
+app.use('/api/scans', scanRoutes);
+app.use('/api/field-scan', fieldScanRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({

@@ -40,7 +40,36 @@ const userSchema = new mongoose.Schema({
       name: String,
       county: String,
       subCounty: String
-    }]
+    }],
+    fieldScan: {
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      maxPhotosPerScan: {
+        type: Number,
+        default: 100
+      },
+      captureInterval: {
+        type: Number,
+        default: 5
+      },
+      requireGpsAccuracy: {
+        type: Number,
+        default: 15
+      },
+      allowedCropTypes: [{
+        type: String
+      }],
+      minPhotoSize: {
+        type: Number,
+        default: 50
+      },
+      maxPhotoSize: {
+        type: Number,
+        default: 500
+      }
+    }
   },
   deviceName: {
     type: String,

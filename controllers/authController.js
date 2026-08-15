@@ -126,7 +126,6 @@ exports.loginWithFarmvexa = async (req, res) => {
     }
     
     const farmvexaUser = response.data.data.user;
-    const fieldScan = response.data.data.fieldScan || null;
     
     let user = await User.findOne({ farmvexaId: farmvexaUser.id });
     
@@ -143,8 +142,7 @@ exports.loginWithFarmvexa = async (req, res) => {
           county: farmvexaUser.county,
           subCounty: farmvexaUser.subCounty,
           phone: farmvexaUser.phone,
-          farms: farmvexaUser.farms || [],
-          fieldScan: fieldScan
+          farms: farmvexaUser.farms || []
         }
       });
     } else {
@@ -157,8 +155,7 @@ exports.loginWithFarmvexa = async (req, res) => {
         county: farmvexaUser.county,
         subCounty: farmvexaUser.subCounty,
         phone: farmvexaUser.phone,
-        farms: farmvexaUser.farms || [],
-        fieldScan: fieldScan
+        farms: farmvexaUser.farms || []
       };
       user.lastLogin = new Date();
       await user.save();
