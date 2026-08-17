@@ -161,32 +161,45 @@ export default function ReceivePage() {
     }
   }, [socket, isScanMode])
 
+  // Helper to send message to FarmVexa (Electron IPC first, then postMessage)
+  const sendMessageToFarmVexa = (data) => {
+    if (window.electronAPI?.sendMessage) {
+      window.electronAPI.sendMessage(data);
+      return true;
+    }
+    if (window.parent !== window) {
+      window.parent.postMessage(data, '*');
+      return true;
+    }
+    return false;
+  };
+
   const sendScanToFarmVexa = async (photos) => {
     setSendingToFarmVexa(true)
     setSendProgress(0)
     
-    if (window.parent !== window) {
-      const total = photos.length
-      
-      const normalizedPhotos = photos.map((photo) => ({
-        imageUrl: photo.cloudinaryUrl || photo.url || photo.imageUrl,
-        lat: photo.lat || photo.gps?.lat || null,
-        lng: photo.lng || photo.gps?.lng || null,
-        timestamp: photo.timestamp || photo.createdAt || new Date().toISOString()
-      }))
-      
-      for (let i = 0; i < total; i++) {
-        setSendProgress(Math.round(((i + 1) / total) * 100))
-        await new Promise(resolve => setTimeout(resolve, 100))
-      }
-      
-      window.parent.postMessage({
-        type: 'farmvexa-field-scan-batch',
-        photos: normalizedPhotos,
-        totalPhotos: total,
-        timestamp: new Date().toISOString()
-      }, '*')
-      
+    const total = photos.length
+    
+    const normalizedPhotos = photos.map((photo) => ({
+      imageUrl: photo.cloudinaryUrl || photo.url || photo.imageUrl,
+      lat: photo.lat || photo.gps?.lat || null,
+      lng: photo.lng || photo.gps?.lng || null,
+      timestamp: photo.timestamp || photo.createdAt || new Date().toISOString()
+    }))
+    
+    for (let i = 0; i < total; i++) {
+      setSendProgress(Math.round(((i + 1) / total) * 100))
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    
+    const data = {
+      type: 'farmvexa-field-scan-batch',
+      photos: normalizedPhotos,
+      totalPhotos: total,
+      timestamp: new Date().toISOString()
+    }
+    
+    if (sendMessageToFarmVexa(data)) {
       showToast(`✅ Sent ${total} photos to FarmVexa!`)
     } else {
       showToast('Open from FarmVexa to send scan')
@@ -320,12 +333,13 @@ export default function ReceivePage() {
   }
 
   const sendToFarmVexa = (capture) => {
-    if (window.parent !== window) {
-      window.parent.postMessage({
-        type: 'farmvexa-crop-photo',
-        imageUrl: capture.url,
-        timestamp: new Date().toISOString()
-      }, '*')
+    const data = {
+      type: 'farmvexa-crop-photo',
+      imageUrl: capture.url,
+      timestamp: new Date().toISOString()
+    }
+    
+    if (sendMessageToFarmVexa(data)) {
       showToast('✅ Photo sent to FarmVexa!')
     } else {
       showToast('Open from FarmVexa to send photos')
@@ -378,21 +392,21 @@ export default function ReceivePage() {
   }
 
   const resendToFarmvexa = (scan) => {
-    if (window.parent !== window) {
-      const normalizedPhotos = scan.photos.map((photo) => ({
-        imageUrl: photo.cloudinaryUrl || photo.url || photo.imageUrl,
-        lat: photo.lat || photo.gps?.lat || null,
-        lng: photo.lng || photo.gps?.lng || null,
-        timestamp: photo.timestamp || photo.createdAt || new Date().toISOString()
-      }))
-      
-      window.parent.postMessage({
-        type: 'farmvexa-field-scan-batch',
-        photos: normalizedPhotos,
-        totalPhotos: normalizedPhotos.length,
-        timestamp: new Date().toISOString()
-      }, '*')
-      
+    const normalizedPhotos = scan.photos.map((photo) => ({
+      imageUrl: photo.cloudinaryUrl || photo.url || photo.imageUrl,
+      lat: photo.lat || photo.gps?.lat || null,
+      lng: photo.lng || photo.gps?.lng || null,
+      timestamp: photo.timestamp || photo.createdAt || new Date().toISOString()
+    }))
+    
+    const data = {
+      type: 'farmvexa-field-scan-batch',
+      photos: normalizedPhotos,
+      totalPhotos: normalizedPhotos.length,
+      timestamp: new Date().toISOString()
+    }
+    
+    if (sendMessageToFarmVexa(data)) {
       showToast(`✅ Resent ${normalizedPhotos.length} photos to FarmVexa!`)
     } else {
       showToast('Open from FarmVexa to resend')

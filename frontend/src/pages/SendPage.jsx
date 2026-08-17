@@ -95,6 +95,19 @@ export default function SendPage() {
     }, 5000)
   }
 
+  // Helper to send message to FarmVexa (Electron IPC first, then postMessage)
+  const sendMessageToFarmVexa = (data) => {
+    if (window.electronAPI?.sendMessage) {
+      window.electronAPI.sendMessage(data);
+      return true;
+    }
+    if (window.parent !== window) {
+      window.parent.postMessage(data, '*');
+      return true;
+    }
+    return false;
+  };
+
   const fetchFieldScanStatus = async () => {
     try {
       const response = await api.get('/field-scan/settings')
@@ -413,8 +426,6 @@ export default function SendPage() {
       }
       
       startGps()
-      
-      // Start streaming frames
       startStreaming()
       
       scanPhotosRef.current = []
@@ -625,14 +636,22 @@ export default function SendPage() {
   }
 
   const resendToFarmvexa = (scan) => {
-    if (window.parent !== window) {
-      window.parent.postMessage({
-        type: 'farmvexa-field-scan-batch',
-        photos: scan.photos,
-        totalPhotos: scan.photos.length,
-        timestamp: new Date().toISOString()
-      }, '*')
-      showToast(`✅ Resent ${scan.photos.length} photos to FarmVexa!`)
+    const normalizedPhotos = scan.photos.map((photo) => ({
+      imageUrl: photo.cloudinaryUrl || photo.url || photo.imageUrl,
+      lat: photo.lat || photo.gps?.lat || null,
+      lng: photo.lng || photo.gps?.lng || null,
+      timestamp: photo.timestamp || photo.createdAt || new Date().toISOString()
+    }))
+    
+    const data = {
+      type: 'farmvexa-field-scan-batch',
+      photos: normalizedPhotos,
+      totalPhotos: normalizedPhotos.length,
+      timestamp: new Date().toISOString()
+    }
+    
+    if (sendMessageToFarmVexa(data)) {
+      showToast(`✅ Resent ${normalizedPhotos.length} photos to FarmVexa!`)
     } else {
       showToast('Open from FarmVexa to resend')
     }
