@@ -127,11 +127,16 @@ exports.loginWithFarmvexa = async (req, res) => {
     
     const farmvexaUser = response.data.data.user;
     
-    let user = await User.findOne({ farmvexaId: farmvexaUser.id });
+    // Use EMAIL as primary lookup
+    let user = await User.findOne({ 
+      email: farmvexaUser.email.toLowerCase(),
+      authProvider: 'farmvexa'
+    });
     
     if (!user) {
+      // Create new user
       user = await User.create({
-        email: farmvexaUser.email,
+        email: farmvexaUser.email.toLowerCase(),
         authProvider: 'farmvexa',
         farmvexaId: farmvexaUser.id,
         deviceName: farmvexaUser.name,
@@ -146,7 +151,8 @@ exports.loginWithFarmvexa = async (req, res) => {
         }
       });
     } else {
-      user.email = farmvexaUser.email;
+      // Update existing user with latest data
+      user.farmvexaId = farmvexaUser.id;
       user.deviceName = farmvexaUser.name;
       user.farmvexaData = {
         name: farmvexaUser.name,
