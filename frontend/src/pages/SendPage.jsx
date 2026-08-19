@@ -95,17 +95,25 @@ export default function SendPage() {
     }, 5000)
   }
 
-  // Helper to send message to FarmVexa (Electron IPC first, then postMessage)
+  // Universal message sender — works for RN, Electron, Web
   const sendMessageToFarmVexa = (data) => {
-    if (window.electronAPI?.sendMessage) {
-      window.electronAPI.sendMessage(data);
+    const messageString = JSON.stringify(data);
+
+    // 1. React Native WebView
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(messageString);
       return true;
     }
-    if (window.parent !== window) {
+
+    // 2. Electron webview / Web iframe
+    if (window.parent && window.parent !== window) {
       window.parent.postMessage(data, '*');
       return true;
     }
-    return false;
+
+    // 3. Fallback — console bridge for Electron
+    console.log('FARMVEXA_MSG:' + messageString);
+    return true;
   };
 
   const fetchFieldScanStatus = async () => {
@@ -479,7 +487,7 @@ export default function SendPage() {
       
       saveScanGroup()
       
-      showToast(`✅ Scan saved - ${scanPhotosRef.current.length} photos and auto sent to FarmVexa`)
+      showToast(`✅ Scan saved - ${scanPhotosRef.current.length} photos`)
       
       setStatus('Scan complete')
     } else {
