@@ -15,7 +15,7 @@ const colors = {
   reset: '\x1b[0m',  // Reset
 };
 
-// Disable colors when not a TTY (e.g., container log capture)
+
 const useColor = process.stdout.isTTY;
 
 function colorize(level, text) {
@@ -70,7 +70,7 @@ class Logger {
     }
   }
 
-  // ---- Special log types ----
+
   socket(message, meta = {}) {
     this.info(`🔌 ${message}`, meta);
   }
