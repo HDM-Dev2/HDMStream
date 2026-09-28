@@ -1,0 +1,10 @@
+{
+  "watch": ["*.js", "config/", "controllers/", "routes/", "models/"],
+  "ignore": [
+    "public/*",
+    "frontend/*",
+    "logs/*",
+    "node_modules/*"
+  ],
+  "delay": 1000
+}
